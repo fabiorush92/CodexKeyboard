@@ -4,7 +4,7 @@ Hardware controller for Codex Desktop based on the AliExpress USB mini keyboard 
 
 The project completely replaces the stock firmware and uses an almost invisible Windows companion to translate physical events into verified Codex Desktop actions and report state through the LEDs.
 
-> Last updated: July 17, 2026 — Phase: R0/R1 complete; R2 first baseline flash next
+> Last updated: July 20, 2026 — Phase: R2 completed; the flashed R1 baseline, every physical control, USB reconnect, and both facilitated recovery paths are verified; R3 is next
 
 ## Goal
 
@@ -92,6 +92,8 @@ Pinned toolchain:
 - transitive tools `MCS51Tools 2023.10.10` and SDCC `build.13407_4`;
 - FQBN `CH55xDuino:mcs51:ch552:usb_settings=user148,upload_method=usb,clock=16internal,bootloader_pin=p36`.
 
+After the first successful flash, temporary Zadig, `wchisp`, `ch55xtool`, Python-environment, and helper files were removed from ignored `.tools`. The directory retains only the pinned Arduino CLI, its configuration, the installed CH55xDuino data/toolchain, and the download cache required for repeatable offline builds and uploads. A direct post-cleanup compilation completed with the same flash/RAM measurements and reproduced the expected HEX SHA-256.
+
 Run from the repository root:
 
 ```powershell
@@ -118,6 +120,10 @@ The first flash replaces the stock firmware. The upstream project documents:
 1. first bootloader entry by shorting `R12` while connecting the device to USB;
 2. after the first flash, entry by holding the knob while connecting the device;
 3. during operation, entry by pressing all three keys and the knob at the same time.
+
+Both facilitated post-flash paths are present in the maintained R1 source. `setup()` checks the active-low encoder button before USB initialization and calls `BOOT_now()`; the running button scanner calls the same routine when all three keys and the encoder button are active. `BOOT_now()` disables USB, interrupts, and timers before jumping to the internal bootloader. R2 physically verified both paths.
+
+The bootloader `2.50` session entered through the running four-control chord remains available for only a few seconds when no uploader communicates with it, then resets automatically into the firmware. This observed behavior is consistent with an independent disassembly that identifies a Timer 0 timeout and automatic soft reset in bootloader `2.50`; no matching WCH specification has been located, so this is supporting reverse-engineering evidence rather than a vendor guarantee. In practice, start the uploader before entering through the chord or begin the upload immediately afterward.
 
 Before the first flash, both the build and a proven recovery procedure must work. The original `1189:8890` VID/PID belongs to the stock firmware and will no longer describe the custom device.
 
@@ -256,12 +262,12 @@ The UI Automation technique has already changed the visible task effort between 
 |---|---:|---|
 | Stock `1189:8890` device analysis | Completed | Remaining useful information incorporated into this README |
 | Effort control through UI Automation | Tested on the real PC | Repeat after companion implementation |
-| Custom firmware baseline | Imported | First baseline flash and hardware validation |
+| Custom firmware baseline | Flashed and validated | Preserve the verified recovery behavior during R4 |
 | Upstream source review | Completed | Physical Button 1/3 pinout verified |
 | Vendor HID USB architecture | Defined | Freeze byte layout with a codec test |
 | Hidden companion architecture | Defined | Create the minimal `WinExe` project |
 | Baseline firmware build | Completed | Repeat with `pwsh -File .\Build-Firmware.ps1` |
-| Device flash | Not started | Enter the bootloader through accessible `R12` and start R2 |
+| Device flash and bench validation | Completed and verified | Preserve the R2 test record during firmware changes |
 | Firmware/host HID protocol | Not started | Loopback and hot-plug |
 | RGB scenes | Not started | Calibrate brightness and timing |
 | Codex state detection | Partial | Capture UIA anchors for each state |
@@ -281,8 +287,8 @@ R1 Build  ───┘                                                    -> R6 
 |---|---|---|---:|
 | R0 | Hardware truth and recovery | Joint | Completed |
 | R1 | Reproducible firmware baseline | Codex | Completed |
-| R2 | First flash and upstream validation | Joint | Next |
-| R3 | HID v1 contract | Codex | Waiting for R2 |
+| R2 | First flash and upstream validation | Joint | Completed |
+| R3 | HID v1 contract | Codex | Next |
 | R4 | CodexKeyboard firmware | Codex + user testing | Waiting for R3 |
 | R5 | Hidden HID companion | Codex | Waiting for R4 |
 | R6 | End-to-end Codex control | Codex + user testing | Waiting for R5 |
@@ -334,6 +340,34 @@ R1 Build  ───┘                                                    -> R6 
 - verify USB enumeration, the three keys, knob press, both encoder directions, and all three RGB LEDs;
 - disconnect and reconnect the device;
 - re-enter the bootloader both by holding the knob during connection and by using the four-button chord.
+
+**Evidence recorded on July 20, 2026:**
+
+- the first `R12` attempt still enumerated as the stock composite device `VID 1189 / PID 8890` with four HID interfaces; the second attempt removed the stock device and exposed bootloader `VID 4348 / PID 55E0`;
+- the bootloader initially had PnP problem code 28, then ran with the WCH `CH375_A64` service, driver version `3.5.2025.8`, status `OK`, and problem code `0`;
+- preflight repeatedly found exactly one bootloader, no stock or custom runtime device, and R1 HEX SHA-256 `4e7b2a73f17d8e882c9a109b40582de121a3a6c06a55bc873999bb92573acdb8`;
+- Arduino CLI resolved the pinned configuration to `vnproch55x -r 2 -t CH552 -c 3 CodexKeyboard.ino.hex`. With the WCH driver, direct and elevated uploads returned `CH375GetUsbID 0`, `Found no CH55x USB`, and exit code `1` before programming;
+- Zadig replaced the driver only for bootloader `4348:55E0`. The resulting binding is WinUSB from provider `libwdi`, version `6.1.7600.16385`, INF `oem77.inf`, with status `OK` and problem code `0`; the stock runtime device was not modified;
+- with WinUSB, the CH55xDuino uploader opened the device and reported `DeviceVersion of CH55x: 2.50`, then failed with `libusb_bulk_transfer` pipe error `-9`, `Send Detect: Fail`, and `Detect MCU: Fail` before erase or write;
+- while WinUSB was bound, the Windows `wchisp 0.3.0` binary required `CH375DLL64.dll` and could not use that WinUSB-only setup. WCHISPTool had been intentionally uninstalled at this stage;
+- WinUSB/libusb pre-write probes using `ch55xtool 1.0.4` and `chprog 2.5.3` opened the exact USB device, but the already-used bootloader session stopped accepting bulk commands. A USB reset returned the keyboard to the healthy stock `1189:8890` runtime, proving that no flash operation had occurred and that a new physical `R12` entry is required;
+- the bootloader was subsequently rebound to a newly installed official WCH package: service `CH375_A64`, provider `wch.cn`, driver version `3.6.2026.4`, INF `oem93.inf`, status `OK`. The package restored `CH375DLL.DLL` and `CH375DLL64.DLL`; both report file version `3.5`. WCHISPTool itself was not restored during this driver-installation step;
+- with exactly one healthy WCH-bound bootloader and the expected HEX hash, the original Arduino upload path again loaded 12,673 bytes over `0x0000` through `0x31CE`, reported `ch375Version 35`, then returned `CH375GetUsbID 0` and `Found no CH55x USB` after 20 retries. Exit code was `1`, before erase or write;
+- a read-only `wchisp 0.3.0 info` attempt found `4348:55E0` but could not open it through the WCH binding and requested WinUSB/libusb instead. No competing Zadig, Python, `vnproch55x`, or `wchisp` process was running;
+- the verified HEX was converted with the pinned toolchain's `avr-objcopy` to `.build/firmware/CodexKeyboard.ino.bin`. The binary contains all 12,673 HEX data bytes over `0x0000` through `0x31CE`, fills 79 unspecified or alignment bytes with erased value `0xFF`, is 12,752 bytes long and eight-byte aligned, and has SHA-256 `700917cc7fbbb85a8c3b611fcaaff061e20cde4d43f18b4219565f4d0423f2a1`.
+- after WCHISPTool was later made available again, independently displayed bootloader `2.50`, and released the device, the unchanged original Arduino upload succeeded. `vnproch55x` returned USB ID `55e04348`, opened the CH375 interface, identified MCU `52 11` as CH552 with bootloader `2.5.0`, wrote 12,751 bytes, completed its full verify pass, reset the device, and exited with code `0`;
+- after reset, exactly one custom runtime enumerated as `USB\VID_1209&PID_C55D\CH55X_KBD_MOS`, class `HIDClass`, service `HidUsb`, status `OK`. Neither bootloader `4348:55E0` nor stock runtime `1189:8890` remained present;
+- the user observed all three RGB LEDs continuously cycling through colors after the first custom boot. This passes the baseline LED-chain and loop-effect check;
+- in the default baseline mode, the user verified Button 1, Button 2, and Button 3 from left to right through their expected `Ctrl+C`, `Ctrl+V`, and `Ctrl+Z` actions in a neutral text editor. Each corresponding LED turned white while its button was active;
+- clockwise and counterclockwise knob rotation both produced the expected page scrolling;
+- the user pressed and held the knob without rotating it: the RGB loop stopped, the left LED became red, and the other two became cyan. Releasing the knob restored the RGB loop. This passes the encoder-switch and baseline menu-feedback checks;
+- after a normal USB disconnect and reconnect with no control held, the RGB loop resumed and Windows again reported exactly one healthy `1209:C55D` HID runtime, with neither the stock runtime nor bootloader present;
+- holding the knob while connecting USB produced exactly one healthy `4348:55E0` bootloader using `CH375_A64`, with no stock or custom runtime present. This passes the first facilitated recovery path without an erase or write;
+- disconnecting that bootloader and reconnecting with no control held returned directly to the healthy `1209:C55D` runtime and RGB loop without rewriting the image;
+- while the custom runtime was active, the user pressed the three buttons and knob together and directly observed entry into the bootloader. With no uploader communicating, bootloader `2.50` exited automatically after a few seconds. The short interval escaped two later PnP snapshots, but a subsequent read found exactly one healthy `1209:C55D` runtime and no bootloader or stock device. This passes the second facilitated recovery path and verifies automatic return without rewriting the image;
+- the short chord-entry window is consistent with independent reverse engineering of bootloader `2.50`, which reports a Timer 0 timeout followed by an automatic soft reset. This behavior is not treated as a WCH-documented contract.
+
+**Result:** R2 is completed. The working baseline and both post-flash recovery paths satisfy the exit gate.
 
 **Deliverable:** bench record with the result for every input, LED, and recovery method.
 
@@ -441,10 +475,12 @@ Every operation passes through one UI Automation queue. A changed window/task, a
 
 ### Next operation
 
-Start R2 as a dedicated hardware step:
+Start R3 by freezing the HID v1 contract before changing the firmware USB stack:
 
-- **Joint:** enter the bootloader through `R12` and record the observed USB identifiers before writing anything;
-- **Then:** flash the R1 HEX and verify USB enumeration, all inputs, all LEDs, reconnect, and both post-flash recovery methods.
+- finalize the 16-byte report IDs, enums, payloads, sequence behavior, heartbeat, ACK/ERROR rules, capabilities, and incompatible-version handling;
+- define one binary vector for every valid message and essential error case;
+- implement the pure host codec and one automated test that makes those vectors the protocol oracle;
+- resolve the final VID/PID and USB strings before introducing the new descriptor in R4.
 
 ## Security and limitations
 
@@ -455,6 +491,7 @@ Start R2 as a dedicated hardware step:
 - errors fail closed: no follow-up action and no false-success LED;
 - a Codex update may change the UIA tree and require new validation;
 - a USB device can spoof VID/PID/serial: HID identity reduces mistakes but is not strong authentication.
+- the final HID firmware and companion remain driverless; the WCH driver currently bound only to development-time bootloader `4348:55E0` is not required by the final HID runtime and can be removed after flashing work is complete.
 
 ## USB identity and licenses
 
@@ -466,6 +503,7 @@ The upstream repository declares the [Creative Commons Attribution-ShareAlike 3.
 
 - [Upstream CH552G firmware](https://github.com/eccherda/ch552g_mini_keyboard)
 - [ch55xduino](https://github.com/DeqingSun/ch55xduino)
+- [Independent CH552 bootloader 2.50 disassembly discussion](https://www.mikrocontroller.net/attachment/638176/mc.pdf) — supporting reverse-engineering evidence for the timeout, not WCH documentation
 - [Codex app server](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md)
 - [Codex commands and deep links](https://learn.chatgpt.com/docs/developer-commands)
 - [Windows HID](https://learn.microsoft.com/windows-hardware/drivers/hid/)
