@@ -1,451 +1,476 @@
 # CodexKeyboard
 
-Controller hardware per Codex Desktop basato sulla mini keyboard USB AliExpress con microcontrollore CH552G, tre tasti, encoder rotativo con pressione e tre LED RGB indirizzabili.
+Hardware controller for Codex Desktop based on the AliExpress USB mini keyboard with a CH552G microcontroller, three keys, a pressable rotary encoder, and three addressable RGB LEDs.
 
-Il progetto sostituisce completamente il firmware originale e usa un companion Windows quasi invisibile per tradurre gli eventi fisici in azioni verificate su Codex Desktop e per riportare lo stato sui LED.
+The project completely replaces the stock firmware and uses an almost invisible Windows companion to translate physical events into verified Codex Desktop actions and report state through the LEDs.
 
-> Ultimo aggiornamento: 16 luglio 2026 — Fase: roadmap definita, prossimo gate R0/R1
+> Last updated: July 17, 2026 — Phase: R0/R1 complete; R2 first baseline flash next
 
-## Obiettivo
+## Goal
 
-- controllare Codex Desktop con tre tasti e un knob;
-- cambiare l'effort della task visibile senza modificare il default globale;
-- mostrare sui tre LED RGB soltanto stati Codex verificati;
-- non installare driver, non richiedere privilegi amministrativi e non mostrare finestre permanenti;
-- mantenere firmware, companion e protocollo piccoli e collaudabili.
+- control Codex Desktop with three keys and a knob;
+- change the effort of the visible task without modifying the global default;
+- show only verified Codex states on the three RGB LEDs;
+- install no drivers, require no administrator privileges, and show no permanent windows;
+- keep the firmware, companion, and protocol small and testable.
 
-## Decisioni correnti
+## Current decisions
 
-| Area | Decisione |
+| Area | Decision |
 |---|---|
-| Firmware | Fork minimale di [`eccherda/ch552g_mini_keyboard`](https://github.com/eccherda/ch552g_mini_keyboard), sostituendo le macro keyboard/mouse con il protocollo CodexKeyboard. |
-| USB | Una collection HID vendor-specific bidirezionale. Il device non emette tasti globali e non richiede un driver custom. |
-| LED | Il companion invia stato o frame RGB; effetti e animazioni sono eseguiti localmente dal firmware. |
-| Companion | Applicazione C# Windows per utente, `WinExe`, senza console o finestra principale, con sola icona tray per stato, diagnostica e uscita. |
-| Avvio | Autostart per utente; stesso desktop interattivo e stesso integrity level di Codex, senza elevazione. |
-| Controllo Codex | Deep link ufficiali dove disponibili, API native Windows e UI Automation semantica con verifica della postcondizione. |
-| App-server | Non viene avviato un secondo app-server per controllare la task posseduta da Codex Desktop. |
-| Configurazione | La v1 non modifica `config.toml` e non introduce editor di mapping, database o sistema di plugin. |
+| Firmware | Minimal fork of [`eccherda/ch552g_mini_keyboard`](https://github.com/eccherda/ch552g_mini_keyboard), replacing keyboard/mouse macros with the CodexKeyboard protocol. |
+| USB | One bidirectional vendor-defined HID collection. The device emits no global keystrokes and requires no custom driver. |
+| LEDs | The companion sends a state or RGB frame; effects and animations run locally in the firmware. |
+| Companion | Per-user C# Windows application, built as `WinExe`, with no console or main window and only a tray icon for status, diagnostics, and exit. |
+| Startup | Per-user autostart; same interactive desktop and integrity level as Codex, without elevation. |
+| Codex control | Official deep links where available, native Windows APIs, and semantic UI Automation with postcondition verification. |
+| App server | No second app server is started to control the task owned by Codex Desktop. |
+| Configuration | v1 does not modify `config.toml` and introduces no mapping editor, database, or plugin system. |
 
-## Architettura
+## Architecture
 
 ```mermaid
 flowchart LR
-    H["CH552G: tasti, encoder e LED"] <-->|"HID vendor 16 byte"| C["Companion C# per utente"]
-    C -->|"deep link / Win32 / UI Automation"| D["Codex Desktop"]
-    D -->|"stato riletto e verificato"| C
-    C -->|"scene o RGB"| H
+    H["CH552G: keys, encoder, and LEDs"] <-->|"16-byte vendor HID"| C["Per-user C# companion"]
+    C -->|"deep links / Win32 / UI Automation"| D["Codex Desktop"]
+    D -->|"re-read and verified state"| C
+    C -->|"scenes or RGB"| H
 ```
 
-### Dove vive lo stato
+### Where state lives
 
-| Stato | Fonte di verità |
+| State | Source of truth |
 |---|---|
-| Pressione, rilascio e scatto encoder | Firmware, dopo debounce e decodifica quadratura. |
-| Effetto e frame RGB realmente visualizzati | Firmware. |
-| Mapping delle sei azioni e scena LED desiderata | Companion. |
-| Effort e stato della task corrente | UI di Codex riletta tramite UI Automation. |
-| Default globale | `config.toml`, che CodexKeyboard non modifica. |
-| Ultimo comando USB applicato | ACK del firmware con sequence number. |
+| Press, release, and encoder detent | Firmware, after debouncing and quadrature decoding. |
+| Effect and RGB frame actually displayed | Firmware. |
+| Mapping of the six actions and desired LED scene | Companion. |
+| Current task effort and state | Codex UI re-read through UI Automation. |
+| Global default | `config.toml`, which CodexKeyboard does not modify. |
+| Last applied USB command | Firmware ACK with sequence number. |
 
-Il companion non conserva una copia dell'effort considerandola autorevole: legge Codex prima dell'azione e verifica il risultato dopo l'azione. I LED cambiano stato soltanto dopo quella verifica.
+The companion does not keep a copy of the effort and treat it as authoritative: it reads Codex before the action and verifies the result afterward. The LEDs change state only after that verification.
 
-## Hardware e firmware upstream
+## Hardware and upstream firmware
 
-Il sorgente upstream è stato verificato al commit [`060bd13496e8ebd6a94029db8089b1544203c57a`](https://github.com/eccherda/ch552g_mini_keyboard/commit/060bd13496e8ebd6a94029db8089b1544203c57a), datato 16 novembre 2023. Il repository non pubblica release.
+The upstream source was inspected at commit [`060bd13496e8ebd6a94029db8089b1544203c57a`](https://github.com/eccherda/ch552g_mini_keyboard/commit/060bd13496e8ebd6a94029db8089b1544203c57a), dated November 16, 2023. The repository publishes no releases.
 
-### Elementi confermati dal sorgente
+The user confirmed that the physical keyboard is visually identical to the keyboard and PCB shown in the upstream photographs. Subsequent physical checks confirmed the ambiguous button pins and access to the `R12` bootloader pads.
+
+### Elements confirmed by the source code
 
 - CH552G;
-- tre pulsanti meccanici;
-- encoder con rotazione CW, rotazione CCW e pressione;
-- tre pixel RGB/GRB indirizzabili in cascata su `P3.4`;
-- USB full-speed tramite ch55xduino;
-- endpoint Interrupt IN e OUT già presenti, attualmente da 9 byte;
-- firmware upstream configurato come tastiera/mouse HID;
-- handler OUT presente ma vuoto: è il punto minimo da estendere per ricevere i comandi LED.
+- three mechanical push buttons;
+- encoder with clockwise rotation, counterclockwise rotation, and press;
+- three addressable RGB/GRB pixels chained on `P3.4`;
+- full-speed USB through ch55xduino;
+- Interrupt IN and OUT endpoints already present, currently 9 bytes;
+- upstream firmware configured as a keyboard/mouse HID device;
+- OUT handler present but empty: this is the smallest extension point for receiving LED commands.
 
-### Pinout da verificare prima del flash
+### Verified pinout
 
-| Segnale | README upstream | Sorgente upstream | Stato |
+| Signal | Upstream README | Upstream source | Status |
 |---|---:|---:|---|
-| Button 1 | `P1.6` | `P1.1` | Conflitto: misura fisica obbligatoria |
-| Button 2 | `P1.7` | `P1.7` | Coerente |
-| Button 3 | `P1.1` | `P1.6` | Conflitto: misura fisica obbligatoria |
-| Encoder press | `P3.3` | `P3.3` | Coerente |
-| Encoder A | `P3.1` | `P3.1` | Coerente |
-| Encoder B | `P3.0` | `P3.0` | Coerente |
-| LED data | `P3.4` | `P3.4` | Coerente |
+| Button 1 | `P1.6` | `P1.1` | Verified by physical continuity: `P1.1` |
+| Button 2 | `P1.7` | `P1.7` | Consistent |
+| Button 3 | `P1.1` | `P1.6` | Verified by physical continuity: `P1.6` |
+| Encoder press | `P3.3` | `P3.3` | Consistent |
+| Encoder A | `P3.1` | `P3.1` | Consistent |
+| Encoder B | `P3.0` | `P3.0` | Consistent |
+| LED data | `P3.4` | `P3.4` | Consistent |
 
-Button 1 e Button 3 risultano invertiti tra documentazione e codice upstream. Non si effettua il primo flash prima di aver identificato la revisione PCB e verificato i pin.
+Button 1 and Button 3 are swapped between the upstream documentation and source code. The user's physical continuity measurements confirm that the source code matches the device: Button 1 is on `P1.1` and Button 3 is on `P1.6`.
 
-### Build upstream documentata
+### Reproducible baseline build
 
-- Arduino IDE con board package [ch55xduino](https://github.com/DeqingSun/ch55xduino);
-- board CH55xDuino;
-- bootloader `P3.6 (D+) Pull up`;
-- clock interno 16 MHz a 3,5 V o 5 V;
-- upload USB;
-- impostazione `USER CODE w/148B USB RAM`.
+The maintained baseline is in [`firmware/CodexKeyboard`](firmware/CodexKeyboard), derived from the pinned upstream commit with its license and attribution preserved. The sketch was renamed, non-English comments were translated, and trailing whitespace was removed; the compiled firmware is unchanged.
 
-Queste impostazioni sono un punto di partenza: il baseline deve ancora essere compilato con il toolchain Windows corrente.
+Pinned toolchain:
 
-### Bootloader e blast radius
+- Arduino CLI `0.35.2`; Windows x64 archive SHA-256 `831e71e91cda08071599a570fb40937c9cf0f0e8cf7711a7e24c7ee28b5406a7`;
+- ch55xduino `0.0.20`; core archive SHA-256 `bcc0961c6261ab55d74fb04bdb873dd7cee853d46b6113c887068fd90b3d5efe`;
+- transitive tools `MCS51Tools 2023.10.10` and SDCC `build.13407_4`;
+- FQBN `CH55xDuino:mcs51:ch552:usb_settings=user148,upload_method=usb,clock=16internal,bootloader_pin=p36`.
 
-Il primo flash sostituisce il firmware originale. L'upstream documenta:
+Run from the repository root:
 
-1. primo ingresso nel bootloader cortocircuitando `R12` durante il collegamento USB;
-2. dopo il primo flash, ingresso tenendo premuto il knob durante il collegamento;
-3. in esecuzione, ingresso premendo contemporaneamente i tre tasti e il knob.
+```powershell
+pwsh -File .\Build-Firmware.ps1
+```
 
-Prima del primo flash devono funzionare sia la compilazione sia una procedura di recovery provata. Il VID/PID originale `1189:8890` appartiene al firmware stock e non descriverà più il device custom.
+The script verifies the Arduino CLI download, installs the pinned core into ignored repository-local directories, performs a clean command-line build, and produces `.build/firmware/CodexKeyboard.ino.hex` without using the Arduino IDE.
 
-## Firmware CodexKeyboard
+R1 result on July 17, 2026:
 
-La v1 elimina configurazioni, macro automatiche, emulazione mouse e tastiera generica. Restano soltanto:
+| Measurement | Result |
+|---|---:|
+| Flash | 12,751 / 14,336 bytes (88%) |
+| Global RAM | 612 / 876 bytes (69%); 264 bytes remain |
+| HEX size | 36,149 bytes |
+| HEX SHA-256 | `4e7b2a73f17d8e882c9a109b40582de121a3a6c06a55bc873999bb92573acdb8` |
 
-- scansione dei quattro pulsanti;
-- decodifica dell'encoder;
-- controllo dei tre RGB;
+The renamed maintained baseline and the pinned upstream snapshot produce byte-for-byte identical HEX files. The core emits repeated `Multiple definition of _dummy_variable` diagnostics but exits successfully; no warning was hidden or patched locally.
+
+### Bootloader and blast radius
+
+The first flash replaces the stock firmware. The upstream project documents:
+
+1. first bootloader entry by shorting `R12` while connecting the device to USB;
+2. after the first flash, entry by holding the knob while connecting the device;
+3. during operation, entry by pressing all three keys and the knob at the same time.
+
+Before the first flash, both the build and a proven recovery procedure must work. The original `1189:8890` VID/PID belongs to the stock firmware and will no longer describe the custom device.
+
+## CodexKeyboard firmware
+
+v1 removes configurations, automatic macros, mouse emulation, and generic keyboard emulation. Only these parts remain:
+
+- scanning the four push buttons;
+- decoding the encoder;
+- controlling the three RGB LEDs;
 - bootloader recovery;
-- trasporto HID bidirezionale.
+- bidirectional HID transport.
 
-### Eventi fisici
+### Physical events
 
-Il firmware invia eventi elementari, non azioni Codex:
+The firmware sends primitive events, not Codex actions:
 
-- press/release per Button 1, Button 2, Button 3 e knob;
-- step `-1` o `+1` per ogni scatto valido dell'encoder.
+- press/release for Button 1, Button 2, Button 3, and the knob;
+- `-1` or `+1` step for each valid encoder detent.
 
-Pressione lunga, doppio click e mapping applicativo restano nel companion. Questo evita di dover riflashare la tastiera per cambiare comportamento.
+Long press, double-click, and application mapping stay in the companion. This avoids reflashing the keyboard when behavior changes.
 
-Il loop upstream ritarda 5 ms ma non implementa un vero debounce stabile. La v1 deve aggiungere un debounce temporale verificabile e una costante di calibrazione per gli step per detent dell'encoder.
+The upstream loop waits 5 ms but does not implement true stable debouncing. v1 must add verifiable time-based debouncing and a calibration constant for encoder transitions per detent.
 
-### Protocollo HID — bozza v1
+### HID protocol — v1 draft
 
-Report fissi da 16 byte, report ID incluso:
+Fixed 16-byte reports, including the report ID:
 
-| Byte | Contenuto |
+| Byte | Content |
 |---:|---|
 | 0 | Report ID |
-| 1 | Versione protocollo |
-| 2 | Tipo messaggio |
+| 1 | Protocol version |
+| 2 | Message type |
 | 3 | Sequence number |
-| 4-15 | Payload specifico |
+| 4-15 | Message-specific payload |
 
-Messaggi device → host:
+Device-to-host messages:
 
 - `INPUT_EVENT`;
-- `DEVICE_INFO` con versione firmware e capability;
-- `ACK`/`ERROR` relativo al sequence number ricevuto.
+- `DEVICE_INFO` with firmware version and capabilities;
+- `ACK`/`ERROR` for the received sequence number.
 
-Messaggi host → device:
+Host-to-device messages:
 
 - `GET_INFO`;
-- `SET_SCENE` per stato semantico ed effetto locale;
-- `SET_RGB` per impostare direttamente i tre pixel;
-- `PING` per rilevare la presenza reale del companion.
+- `SET_SCENE` for semantic state and a local effect;
+- `SET_RGB` to set the three pixels directly;
+- `PING` to detect the real presence of the companion.
 
-Non serve un checksum applicativo: USB fornisce già controllo d'errore. Il sequence number serve a collegare comando e ACK, non a rendere affidabile il trasporto.
+No application checksum is needed because USB already provides error checking. The sequence number connects a command to its ACK; it does not make the transport reliable.
 
-Gli input usano una piccola coda limitata; un eventuale overflow viene segnalato. I comandi LED sono last-write-wins. Valori esatti, enum e timeout diventano definitivi soltanto insieme al primo test automatico del codec del protocollo.
+Inputs use a small bounded queue and report any overflow. LED commands are last-write-wins. Exact values, enums, and timeouts become final only together with the first automated protocol codec test.
 
-### Strategia LED
+### LED strategy
 
-Il PC non invia frame di animazione continui. Invia una scena quando cambia lo stato; il CH552G anima localmente a frequenza limitata. In questo modo gli input USB non dipendono dal rendering dei LED.
+The PC does not continuously stream animation frames. It sends a scene when state changes, and the CH552G animates it locally at a limited rate. This keeps USB input independent from LED rendering.
 
-| Scena | Fonte | Stato |
+| Scene | Source | Status |
 |---|---|---:|
-| Boot / bootloader | Firmware | Supportata dall'upstream |
-| Companion assente | Timeout heartbeat | Da implementare |
-| Companion collegato | Handshake HID | Da implementare |
-| Codex non disponibile | Ricerca finestra/processo | Da implementare |
-| Effort Medium / High / Ultra | Stato UIA verificato | Tecnica già collaudata |
-| Azione riuscita / fallita | Postcondizione UIA | Da implementare |
-| Turno attivo / attesa approvazione / completato | Anchor semantici UIA | Da collaudare prima dell'uso |
+| Boot / bootloader | Firmware | Supported upstream |
+| Companion absent | Heartbeat timeout | To implement |
+| Companion connected | HID handshake | To implement |
+| Codex unavailable | Window/process lookup | To implement |
+| Medium / High / Ultra effort | Verified UIA state | Technique already tested |
+| Action succeeded / failed | UIA postcondition | To implement |
+| Turn active / waiting for approval / completed | Semantic UIA anchors | Must be tested before use |
 
-Colori, luminosità e velocità non sono ancora fissati: vanno calibrati sul dispositivo reale. Il firmware deve sempre limitare la luminosità massima.
+Colors, brightness, and speed are not fixed yet and must be calibrated on the real device. The firmware must always enforce a maximum brightness limit.
 
-## Companion Windows
+## Windows companion
 
-### Forma del processo
+### Process shape
 
-Il companion sarà una piccola applicazione per utente:
+The companion will be a small per-user application:
 
-- output `WinExe`, nessuna console;
-- nessuna finestra principale o presenza nella taskbar;
-- una sola istanza;
-- icona tray con stato, riconnessione, diagnostica e uscita;
-- avvio automatico opzionale per l'utente corrente;
-- nessun servizio Windows, driver, amministratore o `uiAccess`.
+- `WinExe` output with no console;
+- no main window or taskbar presence;
+- a single instance;
+- tray icon with status, reconnect, diagnostics, and exit;
+- optional autostart for the current user;
+- no Windows Service, driver, administrator privileges, or `uiAccess`.
 
-Un Windows Service non è adatto: verrebbe isolato nella Session 0, mentre il controllo di Codex deve avvenire nella sessione desktop dell'utente.
+A Windows Service is unsuitable because it would be isolated in Session 0, while controlling Codex must happen in the user's desktop session.
 
-### Dipendenze
+### Dependencies
 
-La prima versione usa soltanto .NET e API native Windows:
+The first version uses only .NET and native Windows APIs:
 
-- WinForms per message loop e tray icon;
-- SetupAPI/HID per enumerazione, hot-plug e report USB;
-- `FileStream`/I/O overlapped sul device path;
-- Win32 per ricerca e attivazione della finestra;
-- Windows UI Automation per i controlli Codex.
+- WinForms for the message loop and tray icon;
+- SetupAPI/HID for enumeration, hot-plug, and USB reports;
+- `FileStream`/overlapped I/O on the device path;
+- Win32 for finding and activating the window;
+- Windows UI Automation for Codex controls.
 
-Non sono previsti Avalonia, MVVM, database, web server locale o librerie HID esterne finché le API native coprono il caso.
+Avalonia, MVVM, a database, a local web server, and external HID libraries are not planned while native APIs cover the use case.
 
-### Controllo di Codex Desktop
+### Controlling Codex Desktop
 
-Ordine delle superfici utilizzate:
+Control surfaces are used in this order:
 
-1. deep link ufficiali come `codex://threads/new` e `codex://threads/<thread-id>`;
-2. API Win32 per trovare, ripristinare e attivare la finestra;
-3. UI Automation tramite control type, gerarchia, pattern e testo corrente;
-4. verifica della postcondizione nella UI.
+1. official deep links such as `codex://threads/new` and `codex://threads/<thread-id>`;
+2. Win32 APIs to find, restore, and activate the window;
+3. UI Automation using control type, hierarchy, patterns, and current text;
+4. postcondition verification in the UI.
 
-Non vengono usati coordinate del mouse, OCR, `AutomationId` dinamici `radix-*`, socket privati o modifica diretta dei file di stato di Codex.
+Mouse coordinates, OCR, dynamic `radix-*` `AutomationId` values, private sockets, and direct modification of Codex state files are not used.
 
-Nel collaudo sul PC reale la finestra è stata trovata enumerando le top-level window del processo `ChatGPT`: classe `Chrome_WidgetWin_1`, documento accessibile `RootWebArea` con nome `Codex`. Il selettore espone un `Button` con modello ed effort correnti, quindi il controller cerca semanticamente la voce di menu che inizia con `Effort`, usa i pattern `ExpandCollapse`/`Invoke` e rilegge il pulsante come postcondizione. Il focus viene richiesto soltanto quando necessario per aprire il menu.
+During testing on the real PC, the window was found by enumerating top-level windows owned by the `ChatGPT` process: class `Chrome_WidgetWin_1`, accessible `RootWebArea` document named `Codex`. The selector exposes a `Button` containing the current model and effort, so the controller semantically finds the menu item whose name starts with `Effort`, uses the `ExpandCollapse`/`Invoke` patterns, and re-reads the button as the postcondition. Focus is requested only when needed to open the menu.
 
-[`codex app-server`](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md) offre un protocollo JSON-RPC completo per i client che possiedono il server e la conversazione, ma non è documentato un attach del companion all'istanza privata già posseduta da Codex Desktop. Avviarne una seconda creerebbe un secondo proprietario dello stato e non controllerebbe in modo supportato la task visibile.
+[`codex app-server`](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md) provides a complete JSON-RPC protocol for clients that own the server and conversation, but no supported way is documented for attaching the companion to the private instance already owned by Codex Desktop. Starting a second one would create a second state owner and would not control the visible task through a supported path.
 
-### Target e concorrenza
+### Targeting and concurrency
 
-- La v1 supporta una finestra Codex non ambigua e agisce sulla task visibile.
-- Una sola operazione UI Automation può essere attiva alla volta.
-- Gli scatti rapidi del knob vengono accorpati in un breve burst e applicano un solo target finale.
-- Se finestra o task cambiano durante un'operazione, l'azione fallisce senza aggiornare i LED come successo.
-- Le approvazioni Codex non vengono mai accettate automaticamente.
+- v1 supports one unambiguous Codex window and acts on the visible task.
+- Only one UI Automation operation may run at a time.
+- Rapid knob detents are coalesced into a short burst that applies only the final target.
+- If the window or task changes during an operation, the action fails without updating the LEDs as if it had succeeded.
+- Codex approvals are never accepted automatically.
 
-## Mapping proposto per la v1
+## Proposed v1 mapping
 
-| Controllo | Azione |
+| Control | Action |
 |---|---|
-| Button 1 | Attiva/ripristina Codex |
-| Button 2 | Nuova task tramite `codex://threads/new` |
-| Button 3 | Stop del turno corrente, protetto da doppia pressione o pressione lunga |
-| Knob CCW | Effort precedente: `Medium → High → Ultra` |
-| Knob CW | Effort successivo: `Medium → High → Ultra` |
-| Knob press | Attiva Codex e mostra/conferma l'effort corrente |
+| Button 1 | Activate/restore Codex |
+| Button 2 | New task through `codex://threads/new` |
+| Button 3 | Stop the current turn, protected by double press or long press |
+| Knob CCW | Previous effort: `Medium → High → Ultra` |
+| Knob CW | Next effort: `Medium → High → Ultra` |
+| Knob press | Activate Codex and show/confirm the current effort |
 
-La tecnica UI Automation ha già cambiato realmente l'effort della task visibile fra `Ultra` ed `Extra High`, verificando il valore finale e senza modificare `model_reasoning_effort` in `config.toml`.
+The UI Automation technique has already changed the visible task effort between `Ultra` and `Extra High`, verified the final value, and left `model_reasoning_effort` in `config.toml` unchanged.
 
-## Stato del progetto
+## Project status
 
-| Area | Stato | Prossimo gate |
+| Area | Status | Next gate |
 |---|---:|---|
-| Analisi dispositivo stock `1189:8890` | Completata | Informazioni ancora utili assorbite in questo README |
-| Controllo effort tramite UI Automation | Collaudato sul PC reale | Ripetere dopo implementazione companion |
-| Scelta firmware custom | Decisa | Importare il minimo upstream |
-| Revisione sorgente upstream | Completata | Risolvere pinout Button 1/3 |
-| Architettura USB vendor HID | Definita | Congelare byte layout con test codec |
-| Architettura companion nascosto | Definita | Creare il minimo progetto `WinExe` |
-| Build firmware baseline | Non iniziata | Installare/pinnare toolchain e compilare |
-| Flash sul dispositivo | Non iniziato | Verificare recovery e pinout |
-| Protocollo HID firmware/host | Non iniziato | Loopback e hot-plug |
-| Scene RGB | Non iniziate | Calibrazione luminosità e timing |
-| Rilevamento stati Codex | Parziale | Catturare anchor UIA per ogni stato |
-| Collaudo end-to-end | Non iniziato | Un evento fisico = una sola azione verificata |
+| Stock `1189:8890` device analysis | Completed | Remaining useful information incorporated into this README |
+| Effort control through UI Automation | Tested on the real PC | Repeat after companion implementation |
+| Custom firmware baseline | Imported | First baseline flash and hardware validation |
+| Upstream source review | Completed | Physical Button 1/3 pinout verified |
+| Vendor HID USB architecture | Defined | Freeze byte layout with a codec test |
+| Hidden companion architecture | Defined | Create the minimal `WinExe` project |
+| Baseline firmware build | Completed | Repeat with `pwsh -File .\Build-Firmware.ps1` |
+| Device flash | Not started | Enter the bootloader through accessible `R12` and start R2 |
+| Firmware/host HID protocol | Not started | Loopback and hot-plug |
+| RGB scenes | Not started | Calibrate brightness and timing |
+| Codex state detection | Partial | Capture UIA anchors for each state |
+| End-to-end testing | Not started | One physical event equals one verified action |
 
 ## Roadmap
 
-La roadmap è governata da gate verificabili, non da date. Una fase è conclusa soltanto quando il suo criterio di uscita è soddisfatto.
+The roadmap is governed by verifiable gates, not dates. A phase is complete only when its exit criterion is satisfied.
 
 ```text
 R0 Hardware ─┐
-             ├─> R2 Flash baseline -> R3 Protocollo -> R4 Firmware -> R5 Companion HID
-R1 Build  ───┘                                                     -> R6 Codex -> R7 LED -> R8 Release
+             ├─> R2 Baseline flash -> R3 Protocol -> R4 Firmware -> R5 HID companion
+R1 Build  ───┘                                                    -> R6 Codex -> R7 LEDs -> R8 Release
 ```
 
-| ID | Fase | Responsabile | Stato |
+| ID | Phase | Owner | Status |
 |---|---|---|---:|
-| R0 | Verità hardware e recovery | Insieme | Prossima |
-| R1 | Baseline firmware riproducibile | Codex | Prossima |
-| R2 | Primo flash e collaudo upstream | Insieme | In attesa di R0/R1 |
-| R3 | Contratto HID v1 | Codex | In attesa di R2 |
-| R4 | Firmware CodexKeyboard | Codex + collaudo utente | In attesa di R3 |
-| R5 | Companion HID nascosto | Codex | In attesa di R4 |
-| R6 | Controllo Codex end-to-end | Codex + collaudo utente | In attesa di R5 |
-| R7 | Feedback LED verificato | Insieme | In attesa di R6 |
-| R8 | Packaging e accettazione v1 | Insieme | In attesa di R7 |
+| R0 | Hardware truth and recovery | Joint | Completed |
+| R1 | Reproducible firmware baseline | Codex | Completed |
+| R2 | First flash and upstream validation | Joint | Next |
+| R3 | HID v1 contract | Codex | Waiting for R2 |
+| R4 | CodexKeyboard firmware | Codex + user testing | Waiting for R3 |
+| R5 | Hidden HID companion | Codex | Waiting for R4 |
+| R6 | End-to-end Codex control | Codex + user testing | Waiting for R5 |
+| R7 | Verified LED feedback | Joint | Waiting for R6 |
+| R8 | Packaging and v1 acceptance | Joint | Waiting for R7 |
 
-### R0 — Verità hardware e recovery
+### R0 — Hardware truth and recovery
 
-**Operazioni**
+**Operations**
 
-- fotografare ad alta risoluzione entrambi i lati della PCB e il marking del microcontrollore;
-- identificare revisione PCB, `R12`, piazzole e percorso del segnale dei tasti;
-- verificare con continuità se Button 1/Button 3 sono su `P1.1` o `P1.6`;
-- confermare encoder press `P3.3`, encoder A/B `P3.1/P3.0` e LED data `P3.4`;
-- verificare che il metodo fisico per entrare nel bootloader sia accessibile e ripetibile.
+- confirm that the device is visually identical to the upstream photographs (user-confirmed);
+- inspect the PCB directly or through close-up photographs to identify the microcontroller marking, PCB revision, `R12`, pads, and button signal traces;
+- verify Button 1/Button 3 by continuity testing (user-confirmed: Button 1 is `P1.1`, Button 3 is `P1.6`);
+- confirm encoder press `P3.3`, encoder A/B `P3.1/P3.0`, and LED data `P3.4`;
+- verify that the physical bootloader entry method is accessible and repeatable (user-confirmed for `R12` access).
 
-**Deliverable:** pinout definitivo nel README e checklist di recovery.
+**Evidence:** exact visual match with the upstream keyboard and PCB, physical continuity measurements for Button 1/Button 3, and accessible `R12` pads.
 
-**Gate di uscita:** nessun pin ambiguo e procedura di bootloader fisicamente praticabile.
+**Deliverable:** definitive pinout in the README and a recovery checklist.
 
-**Stop condition:** nessun flash finché questo gate non è chiuso.
+**Exit gate:** no ambiguous pin and a physically practical bootloader procedure.
 
-### R1 — Baseline firmware riproducibile
+**Stop condition:** no flashing until this gate is closed.
 
-**Operazioni**
+### R1 — Reproducible firmware baseline
 
-- importare il commit upstream già fissato in una directory `firmware/`, conservando licenza e attribuzione;
-- fissare versione e configurazione del toolchain ch55xduino;
-- compilare il firmware upstream invariato da riga di comando su Windows;
-- registrare comando di build, dimensione flash/RAM e artefatto prodotto;
-- aggiungere il controllo minimo che ricompila il baseline da un checkout pulito.
+**Operations**
 
-**Deliverable:** sorgente upstream tracciato e build documentata.
+- import the pinned upstream commit into a `firmware/` directory while preserving its license and attribution;
+- pin the ch55xduino toolchain version and configuration;
+- compile the unchanged upstream firmware from the Windows command line;
+- record the build command, flash/RAM size, and produced artifact;
+- add the smallest check that rebuilds the baseline from a clean checkout.
 
-**Gate di uscita:** compilazione ripetibile senza modifiche manuali nell'IDE.
+**Deliverable:** tracked upstream source and documented build.
 
-**Nota:** R0 e R1 possono procedere in parallelo; entrambi bloccano R2.
+**Exit gate:** reproducible compilation without manual IDE changes.
 
-### R2 — Primo flash e collaudo upstream
+**Evidence:** `pwsh -File .\Build-Firmware.ps1` completed successfully on July 17, 2026 and produced the byte-identical baseline HEX documented above.
 
-**Operazioni**
+**Note:** R0 and R1 are complete and jointly unblock R2.
 
-- entrare nel bootloader tramite `R12` e salvare gli identificativi osservati;
-- flashare il baseline upstream compilato in R1;
-- verificare enumerazione USB, tre tasti, pressione knob, entrambi i versi dell'encoder e tre RGB;
-- scollegare e riconnettere il device;
-- rientrare nel bootloader sia con knob premuto al collegamento sia con il chord dei quattro tasti.
+### R2 — First flash and upstream validation
 
-**Deliverable:** verbale di banco con esito di ogni input, LED e metodo di recovery.
+**Operations**
 
-**Gate di uscita:** baseline funzionante e recovery provata dopo il primo flash.
+- enter the bootloader through `R12` and record the observed identifiers;
+- flash the upstream baseline compiled in R1;
+- verify USB enumeration, the three keys, knob press, both encoder directions, and all three RGB LEDs;
+- disconnect and reconnect the device;
+- re-enter the bootloader both by holding the knob during connection and by using the four-button chord.
 
-**Stop condition:** se la recovery fallisce, non si modifica ancora lo stack USB.
+**Deliverable:** bench record with the result for every input, LED, and recovery method.
 
-### R3 — Contratto HID v1
+**Exit gate:** working baseline and recovery proven after the first flash.
 
-**Operazioni**
+**Stop condition:** if recovery fails, do not modify the USB stack yet.
 
-- congelare report ID, enum, payload, sequence number, capability e comportamento al wrap;
-- definire timeout heartbeat, ACK/ERROR e gestione della versione incompatibile;
-- produrre un vettore binario atteso per ogni messaggio valido e per gli errori essenziali;
-- implementare il codec host puro e un solo test automatico sui vettori;
-- decidere VID/PID e stringhe USB usati da CodexKeyboard prima del nuovo descriptor.
+### R3 — HID v1 contract
 
-**Deliverable:** protocollo v1 e vettori binari che costituiscono il test oracle.
+**Operations**
 
-**Gate di uscita:** ogni report da 16 byte ha un significato univoco e un esempio verificabile.
+- freeze report IDs, enums, payloads, sequence number, capabilities, and wraparound behavior;
+- define the heartbeat timeout, ACK/ERROR behavior, and incompatible-version handling;
+- produce one expected binary vector for every valid message and essential error case;
+- implement the pure host codec and one automated test over the vectors;
+- decide the VID/PID and USB strings used by CodexKeyboard before introducing the new descriptor.
 
-**Stop condition:** firmware e companion non inventano enum separati fuori dal contratto.
+**Deliverable:** v1 protocol and binary vectors that form the test oracle.
 
-### R4 — Firmware CodexKeyboard
+**Exit gate:** every 16-byte report has one unambiguous meaning and a verifiable example.
 
-**Operazioni**
+**Stop condition:** firmware and companion must not invent separate enums outside the contract.
 
-- rimuovere macro, menu di configurazione, keyboard HID e mouse HID;
-- esporre soltanto la collection HID vendor-specific IN/OUT;
-- implementare debounce temporale, calibrazione encoder e coda input limitata;
-- implementare `GET_INFO`, eventi input, ACK/ERROR, heartbeat, `SET_SCENE` e `SET_RGB`;
-- rendere gli effetti LED non bloccanti e applicare un limite di luminosità;
-- conservare entrambe le vie di ingresso nel bootloader.
+### R4 — CodexKeyboard firmware
 
-**Deliverable:** firmware CodexKeyboard flashabile.
+**Operations**
 
-**Gate di uscita:** Windows non lo vede come tastiera, le sei azioni arrivano una sola volta, RGB e ACK funzionano e il timeout torna alla scena companion-assente.
+- remove macros, the configuration menu, keyboard HID, and mouse HID;
+- expose only the vendor-defined IN/OUT HID collection;
+- implement time-based debouncing, encoder calibration, and a bounded input queue;
+- implement `GET_INFO`, input events, ACK/ERROR, heartbeat, `SET_SCENE`, and `SET_RGB`;
+- make LED effects non-blocking and enforce a brightness limit;
+- preserve both bootloader entry paths.
 
-**Verifica hardware:** rotazioni lente/rapide, pressioni simultanee, reconnect e recovery.
+**Deliverable:** flashable CodexKeyboard firmware.
 
-### R5 — Companion HID nascosto
+**Exit gate:** Windows does not see it as a keyboard, the six actions arrive exactly once, RGB and ACK work, and timeout returns to the companion-absent scene.
 
-**Operazioni**
+**Hardware verification:** slow/fast rotations, simultaneous presses, reconnect, and recovery.
 
-- creare il minimo progetto C# `WinExe` con message loop, tray icon e single-instance;
-- enumerare soltanto la collection CodexKeyboard tramite SetupAPI/HID;
-- implementare I/O asincrono, handshake, heartbeat, ACK/timeout e hot-plug;
-- serializzare le scritture e riconnettere senza riavviare il processo;
-- mantenere diagnostica limitata e accessibile dal menu tray;
-- collaudare input e LED senza ancora comandare Codex.
+### R5 — Hidden HID companion
 
-**Deliverable:** companion che controlla completamente il device ma non Codex.
+**Operations**
 
-**Gate di uscita:** funziona avviando prima il device o prima il companion e recupera da unplug/replug senza input duplicati.
+- create the minimal C# `WinExe` project with a message loop, tray icon, and single-instance behavior;
+- enumerate only the CodexKeyboard collection through SetupAPI/HID;
+- implement asynchronous I/O, handshake, heartbeat, ACK/timeout, and hot-plug;
+- serialize writes and reconnect without restarting the process;
+- keep bounded diagnostics accessible from the tray menu;
+- test inputs and LEDs before controlling Codex.
 
-### R6 — Controllo Codex end-to-end
+**Deliverable:** companion that fully controls the device but not Codex.
 
-Le azioni entrano una alla volta, in questo ordine:
+**Exit gate:** it works whether the device or companion starts first and recovers from unplug/replug without duplicate inputs.
 
-1. trovare, ripristinare e attivare una finestra Codex non ambigua;
-2. aprire una nuova task con il deep link ufficiale;
-3. leggere l'effort corrente;
-4. cambiare effort con burst del knob e verificare la postcondizione;
-5. mostrare/confermare l'effort con knob press;
-6. interrompere un turno con Button 3 protetto e postcondizione verificata.
+### R6 — End-to-end Codex control
 
-Ogni operazione passa attraverso una sola coda UI Automation. Cambio finestra/task, selector ambiguo o postcondizione fallita producono errore senza azioni successive.
+Actions are added one at a time in this order:
 
-**Deliverable:** mapping v1 completo.
+1. find, restore, and activate one unambiguous Codex window;
+2. open a new task through the official deep link;
+3. read the current effort;
+4. change effort from a knob burst and verify the postcondition;
+5. show/confirm effort with knob press;
+6. interrupt a turn with protected Button 3 input and a verified postcondition.
 
-**Gate di uscita:** ogni evento fisico produce una sola azione Codex verificata in foreground, background e finestra minimizzata.
+Every operation passes through one UI Automation queue. A changed window/task, ambiguous selector, or failed postcondition produces an error without further actions.
 
-**Stop condition:** nessuna automazione di approvazioni e nessun fallback a coordinate o IPC privati.
+**Deliverable:** complete v1 mapping.
 
-### R7 — Feedback LED verificato
+**Exit gate:** every physical event produces one verified Codex action in foreground, background, and minimized-window conditions.
 
-**Operazioni**
+**Stop condition:** no approval automation and no fallback to coordinates or private IPC.
 
-- mappare prima connessione companion, disponibilità Codex, effort e successo/errore dell'ultima azione;
-- calibrare sul dispositivo colori, luminosità, frequenza e durata degli effetti;
-- aggiornare la scena soltanto dopo la verifica dello stato sorgente;
-- provare crash/restart del companion e chiusura/riapertura di Codex;
-- aggiungere turno attivo, attesa approvazione o completamento soltanto se emerge un anchor UIA stabile con postcondizione.
+### R7 — Verified LED feedback
 
-**Deliverable:** tabella definitiva stato → scena e implementazione corrispondente.
+**Operations**
 
-**Gate di uscita:** nessun LED comunica uno stato non confermato; heartbeat e errori tornano sempre a una scena sicura.
+- first map companion connection, Codex availability, effort, and success/failure of the latest action;
+- calibrate colors, brightness, effect frequency, and duration on the device;
+- update the scene only after verifying the source state;
+- test companion crash/restart and Codex close/reopen;
+- add active turn, waiting for approval, or completion only if a stable UIA anchor with a postcondition is found.
 
-**Deferred:** gli stati semantici fragili non bloccano la v1.
+**Deliverable:** final state-to-scene table and matching implementation.
 
-### R8 — Packaging e accettazione v1
+**Exit gate:** no LED communicates an unconfirmed state; heartbeat and errors always return to a safe scene.
 
-**Operazioni**
+**Deferred:** fragile semantic states do not block v1.
 
-- pubblicare il companion per utente senza privilegi amministrativi;
-- aggiungere autostart opzionale, uscita tray e procedura di rimozione;
-- verificare che non vengano installati driver o servizi;
-- eseguire la matrice con Codex avviato/chiuso, foreground/background/minimizzato, cambio task, turno attivo, USB unplug/replug e rotazioni rapide;
-- ripetere il collaudo UI Automation sulla versione Codex installata;
-- aggiornare stato, limiti noti e istruzioni operative nel README.
+### R8 — Packaging and v1 acceptance
 
-**Deliverable:** release v1 installabile e rimovibile per utente.
+**Operations**
 
-**Gate di uscita:** soddisfatti tutti i criteri di completamento v1 riportati sotto.
+- publish the companion per user without administrator privileges;
+- add optional autostart, tray exit, and removal instructions;
+- verify that no drivers or services are installed;
+- run the matrix with Codex open/closed, foreground/background/minimized, task switching, an active turn, USB unplug/replug, and rapid knob rotation;
+- repeat UI Automation validation against the installed Codex version;
+- update project status, known limitations, and operating instructions in the README.
 
-### Prossima operazione
+**Deliverable:** per-user installable and removable v1 release.
 
-Avviare R0 e R1 in parallelo:
+**Exit gate:** all v1 completion criteria below are satisfied.
 
-- **Utente:** fornire foto nitide dei due lati della PCB e la verifica di continuità di Button 1/Button 3;
-- **Codex:** importare il commit upstream fissato e rendere riproducibile il build baseline, senza ancora flashare il device.
+### Next operation
 
-## Sicurezza e limiti
+Start R2 as a dedicated hardware step:
 
-- nessuna credenziale OpenAI viene letta o memorizzata;
-- nessun input delle altre tastiere viene intercettato;
-- il companion apre soltanto la collection HID CodexKeyboard attesa;
-- nessuna approvazione, prompt o comando distruttivo viene automatizzato nella v1;
-- gli errori sono fail-closed: niente azione successiva e niente LED di falso successo;
-- un aggiornamento di Codex può cambiare il tree UIA e richiede un nuovo collaudo;
-- un device USB può falsificare VID/PID/seriale: l'identità HID riduce gli errori, non costituisce autenticazione forte.
+- **Joint:** enter the bootloader through `R12` and record the observed USB identifiers before writing anything;
+- **Then:** flash the R1 HEX and verify USB enumeration, all inputs, all LEDs, reconnect, and both post-flash recovery methods.
 
-## Identità USB e licenze
+## Security and limitations
 
-L'upstream usa `VID 1209 / PID C55D`. Quel valore non viene assunto automaticamente come identità definitiva di CodexKeyboard: prima di distribuire il firmware va assegnato o verificato un PID appropriato e stabile.
+- no OpenAI credentials are read or stored;
+- input from other keyboards is not intercepted;
+- the companion opens only the expected CodexKeyboard HID collection;
+- no approval, prompt, or destructive command is automated in v1;
+- errors fail closed: no follow-up action and no false-success LED;
+- a Codex update may change the UIA tree and require new validation;
+- a USB device can spoof VID/PID/serial: HID identity reduces mistakes but is not strong authentication.
 
-Il repository upstream dichiara la licenza [Creative Commons Attribution-ShareAlike 3.0 Unported](https://github.com/eccherda/ch552g_mini_keyboard/blob/master/LICENCE). Finché non viene fatta una verifica specifica, il firmware derivato deve conservare attribuzione, avvisi e condizioni share-alike. Il companion scritto da zero resta separato dal codice derivato.
+## USB identity and licenses
 
-## Documentazione e fonti
+The upstream project uses `VID 1209 / PID C55D`. That value is not automatically treated as the final CodexKeyboard identity: an appropriate stable PID must be assigned or verified before firmware distribution.
 
-- [Firmware upstream CH552G](https://github.com/eccherda/ch552g_mini_keyboard)
+The upstream repository declares the [Creative Commons Attribution-ShareAlike 3.0 Unported](https://github.com/eccherda/ch552g_mini_keyboard/blob/master/LICENCE) license. Until a specific review is completed, the derivative firmware must preserve attribution, notices, and share-alike conditions. The companion written from scratch remains separate from the derivative code.
+
+## Documentation and sources
+
+- [Upstream CH552G firmware](https://github.com/eccherda/ch552g_mini_keyboard)
 - [ch55xduino](https://github.com/DeqingSun/ch55xduino)
-- [Codex app-server](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md)
-- [Comandi e deep link di Codex](https://learn.chatgpt.com/docs/developer-commands)
+- [Codex app server](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md)
+- [Codex commands and deep links](https://learn.chatgpt.com/docs/developer-commands)
 - [Windows HID](https://learn.microsoft.com/windows-hardware/drivers/hid/)
 - [Windows UI Automation](https://learn.microsoft.com/windows/win32/winauto/entry-uiautocore-overview)
 
-## Criterio di completamento v1
+## v1 completion criterion
 
-La v1 è completa quando ogni controllo fisico produce una sola azione prevista, la postcondizione è verificata in Codex, i LED mostrano soltanto stato confermato e scollegamento/ripristino del device o di Codex non richiedono il riavvio del PC.
+v1 is complete when every physical control produces exactly one expected action, the postcondition is verified in Codex, the LEDs show only confirmed state, and disconnecting/recovering the device or Codex does not require restarting the PC.
