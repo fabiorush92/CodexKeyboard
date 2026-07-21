@@ -4,7 +4,7 @@ Hardware controller for Codex Desktop based on the AliExpress USB mini keyboard 
 
 The project completely replaces the stock firmware and uses an almost invisible Windows companion to translate physical events into verified Codex Desktop actions and report state through the LEDs.
 
-> Last updated: July 20, 2026 — Phase: R2 completed; the flashed R1 baseline, every physical control, USB reconnect, and both facilitated recovery paths are verified; R3 is next
+> Last updated: July 21, 2026 — Phase: R4 firmware flashed; vendor HID, protocol, controls, encoder, and LED rendering verified; reconnect and recovery checks remain
 
 ## Goal
 
@@ -121,7 +121,7 @@ The first flash replaces the stock firmware. The upstream project documents:
 2. after the first flash, entry by holding the knob while connecting the device;
 3. during operation, entry by pressing all three keys and the knob at the same time.
 
-Both facilitated post-flash paths are present in the maintained R1 source. `setup()` checks the active-low encoder button before USB initialization and calls `BOOT_now()`; the running button scanner calls the same routine when all three keys and the encoder button are active. `BOOT_now()` disables USB, interrupts, and timers before jumping to the internal bootloader. R2 physically verified both paths.
+Both facilitated post-flash paths are preserved in the maintained R4 source. `setup()` checks the active-low encoder button before USB initialization and calls `BOOT_now()`; the debounced running input scanner calls the same routine when all three keys and the encoder button are active. `BOOT_now()` disables USB, interrupts, and timers before jumping to the internal bootloader. R2 physically verified both paths on the baseline image; the R4 image still requires the same physical regression test.
 
 The bootloader `2.50` session entered through the running four-control chord remains available for only a few seconds when no uploader communicates with it, then resets automatically into the firmware. This observed behavior is consistent with an independent disassembly that identifies a Timer 0 timeout and automatic soft reset in bootloader `2.50`; no matching WCH specification has been located, so this is supporting reverse-engineering evidence rather than a vendor guarantee. In practice, start the uploader before entering through the chord or begin the upload immediately afterward.
 
@@ -146,36 +146,157 @@ The firmware sends primitive events, not Codex actions:
 
 Long press, double-click, and application mapping stay in the companion. This avoids reflashing the keyboard when behavior changes.
 
-The upstream loop waits 5 ms but does not implement true stable debouncing. v1 must add verifiable time-based debouncing and a calibration constant for encoder transitions per detent.
+R4 replaces the upstream 5 ms polling delay with a non-blocking loop. A button state must remain stable for 8 ms before it produces an event. The quadrature decoder requires three valid transitions before returning to its idle state; this named calibration point preserves the behavior observed with the baseline encoder and must be confirmed with slow and fast physical rotations. Events enter an eight-item FIFO. Sequence numbers are assigned before insertion so overflow remains detectable.
 
-### HID protocol — v1 draft
+### HID protocol — v1
 
-Fixed 16-byte reports, including the report ID:
+R3 freezes this contract. All multi-byte values are little-endian, every unused or reserved byte must be zero, and logical LED components are ordered RGB even though the firmware translates them to the physical GRB chain. USB already provides transport error detection, so the protocol adds no checksum.
+
+#### USB transport and identity
+
+| Field | v1 value |
+|---|---|
+| VID / PID | `1209:C55D` — the pid.codes allocation for ch55xduino HID devices |
+| Device release | `0x0100` |
+| Interface | HID class, no boot subclass, no boot protocol |
+| Collection | Vendor-defined usage page `0xFF00`, usage `0x01` |
+| IN / OUT endpoints | Interrupt `0x81` / `0x01`, 16 bytes, 10 ms polling interval |
+| Report ID | `0x01` for both Input and Output reports |
+| Manufacturer / product | `CodexKeyboard` / `CodexKeyboard` |
+| Serial | `CK` followed by the five-byte CH552 unique ID as ten uppercase hexadecimal digits |
+
+The serial bytes are encoded in this fixed order: the low byte at `ROM_CHIP_ID_HX`, the low and high bytes of `ROM_CHIP_ID_LO`, then the low and high bytes of `ROM_CHIP_ID_HI`. The pinned CH552 headers map those values to code addresses `0x3FFA`, `0x3FFC`–`0x3FFD`, and `0x3FFE`–`0x3FFF`.
+
+`1209:C55D` is intentionally retained for the private v1 because it is the registered ch55xduino HID family allocation already used by the baseline. It is not unique to CodexKeyboard. The companion must require the complete identity above, exactly one matching collection, and a valid `DEVICE_INFO` handshake; zero or multiple candidates fail closed. A project-specific PID should be requested before public distribution to avoid collisions with other ch55xduino HID devices.
+
+#### Common report header
+
+Every report is exactly 16 bytes, including its report ID:
 
 | Byte | Content |
 |---:|---|
-| 0 | Report ID |
-| 1 | Protocol version |
+| 0 | Report ID `0x01` |
+| 1 | Protocol version `0x01` |
 | 2 | Message type |
 | 3 | Sequence number |
-| 4-15 | Message-specific payload |
+| 4–15 | Message-specific payload |
 
-Device-to-host messages:
+Message types use separate ranges for each direction:
 
-- `INPUT_EVENT`;
-- `DEVICE_INFO` with firmware version and capabilities;
-- `ACK`/`ERROR` for the received sequence number.
+| Value | Direction | Message | Successful response |
+|---:|---|---|---|
+| `0x01` | Host → device | `GET_INFO` | `DEVICE_INFO` |
+| `0x02` | Host → device | `SET_SCENE` | `ACK` |
+| `0x03` | Host → device | `SET_RGB` | `ACK` |
+| `0x04` | Host → device | `PING` | `ACK` |
+| `0x81` | Device → host | `INPUT_EVENT` | Unsolicited |
+| `0x82` | Device → host | `DEVICE_INFO` | Terminal response to `GET_INFO` |
+| `0x83` | Device → host | `ACK` | Terminal response |
+| `0x84` | Device → host | `ERROR` | Terminal response |
 
-Host-to-device messages:
+#### Host-to-device payloads
 
-- `GET_INFO`;
-- `SET_SCENE` for semantic state and a local effect;
-- `SET_RGB` to set the three pixels directly;
-- `PING` to detect the real presence of the companion.
+`GET_INFO` and `PING` require bytes 4–15 to be zero.
 
-No application checksum is needed because USB already provides error checking. The sequence number connects a command to its ACK; it does not make the transport reliable.
+`SET_SCENE`:
 
-Inputs use a small bounded queue and report any overflow. LED commands are last-write-wins. Exact values, enums, and timeouts become final only together with the first automated protocol codec test.
+| Byte | Content |
+|---:|---|
+| 4 | Scene |
+| 5 | Effect |
+| 6 | Brightness, from zero through the maximum advertised by `DEVICE_INFO` |
+| 7–8 | Effect period in 10 ms units |
+| 9–15 | Zero |
+
+Scenes:
+
+| Value | Scene |
+|---:|---|
+| `0x00` | `COMPANION_ABSENT` |
+| `0x01` | `COMPANION_CONNECTED` |
+| `0x02` | `CODEX_UNAVAILABLE` |
+| `0x03` | `EFFORT_MEDIUM` |
+| `0x04` | `EFFORT_HIGH` |
+| `0x05` | `EFFORT_ULTRA` |
+| `0x06` | `ACTION_SUCCEEDED` |
+| `0x07` | `ACTION_FAILED` |
+| `0x08` | `TURN_ACTIVE` |
+| `0x09` | `WAITING_FOR_APPROVAL` |
+| `0x0A` | `COMPLETED` |
+
+Effects are `SOLID = 0x00`, `BLINK = 0x01`, and `BREATHE = 0x02`. `SOLID` requires a zero period; animated effects require a period from 1 through 6,000 units. A scene remains active until the next LED command or heartbeat expiry. Firmware owns rendering and always enforces its advertised brightness ceiling.
+
+`SET_RGB` places `R`, `G`, and `B` for LED 1 in bytes 4–6, LED 2 in bytes 7–9, and LED 3 in bytes 10–12. Bytes 13–15 are zero. Every component must be at or below the advertised maximum brightness. The frame is last-write-wins and remains active until the next LED command or heartbeat expiry.
+
+#### Device-to-host payloads
+
+Controls are `BUTTON_1 = 0x01`, `BUTTON_2 = 0x02`, `BUTTON_3 = 0x03`, `KNOB_BUTTON = 0x04`, and `ENCODER = 0x05`. Input kinds are `PRESS = 0x01`, `RELEASE = 0x02`, and `ROTATE = 0x03`.
+
+`INPUT_EVENT`:
+
+| Byte | Content |
+|---:|---|
+| 4 | Control |
+| 5 | Input kind |
+| 6 | Signed value: zero for press/release, `-1` for counterclockwise, `+1` for clockwise |
+| 7 | Flags; bit 0 means `QUEUE_OVERFLOW`, all other bits are zero |
+| 8 | Button state: normally post-event; current physical state when `QUEUE_OVERFLOW` is set. Bits 0–3 are Button 1, Button 2, Button 3, and knob press |
+| 9–15 | Zero |
+
+The firmware assigns the event sequence before queue insertion. A dropped event therefore creates a detectable sequence gap, and the next delivered event also carries the sticky `QUEUE_OVERFLOW` flag and the current physical button state. The host codec requires event/state agreement during normal delivery but permits this explicit resynchronization exception when the overflow flag is set. On either indication the companion discards pending gestures, does not create a Codex action from the uncertain event, adopts the supplied button state, and resumes only after all buttons are released.
+
+`DEVICE_INFO`:
+
+| Byte | Content |
+|---:|---|
+| 4–6 | Firmware major, minor, patch |
+| 7–8 | Capability bitmap |
+| 9 | Button count, `4` including knob press |
+| 10 | Encoder count, `1` |
+| 11 | RGB LED count, `3` |
+| 12 | Maximum allowed value for each RGB component |
+| 13–15 | Zero |
+
+Capability bits are: bit 0 buttons, bit 1 encoder, bit 2 scenes, bit 3 direct RGB, bit 4 heartbeat watchdog, and bit 5 queue-overflow reporting. All six capabilities are required by CodexKeyboard v1.
+
+`ACK` stores the acknowledged host message type in byte 4 and zeroes bytes 5–15.
+
+`ERROR` stores the failed message type in byte 4, the error code in byte 5, a detail byte in byte 6, and zeroes bytes 7–15. Error codes are `UNSUPPORTED_VERSION = 0x01`, `UNKNOWN_MESSAGE_TYPE = 0x02`, `WRONG_DIRECTION = 0x03`, `INVALID_PAYLOAD = 0x04`, and `UNSUPPORTED_VALUE = 0x05`. Detail is the supported version for `UNSUPPORTED_VERSION`, otherwise the failing report-byte offset, or `0xFF` when no exact byte applies.
+
+#### Ordering, timing, and failure behavior
+
+- The host starts at sequence zero after opening a device and increments after every command, wrapping from `0xFF` to `0x00`. Only one command may be outstanding.
+- `DEVICE_INFO`, `ACK`, and `ERROR` echo the host command sequence. The device does not implement replay storage or ordering policy; repeated idempotent commands are processed again.
+- `INPUT_EVENT` uses an independent counter that starts at zero after device reset and wraps modulo 256. The first event after a handshake establishes the host baseline; later gaps are handled as input loss.
+- A command has a 250 ms response deadline. The companion does not retry after an ambiguous timeout: it closes the handle, clears input state, reports the failure, and reconnects.
+- The companion sends `PING` after one second without another valid command. Any valid host command refreshes the device watchdog. Three seconds without one activates `COMPANION_ABSENT`; invalid reports do not refresh it.
+- A structurally valid report with an unsupported version, type, direction, payload, or value receives one `ERROR`. A wrong report ID or length is dropped because its sequence cannot be trusted.
+- LED commands are last-write-wins. Input events use a bounded FIFO; USB input transmission remains independent from LED animation.
+
+#### Binary vectors and executable oracle
+
+These vectors cover every message and every protocol error code. Values such as firmware version and brightness are valid examples, not device calibration measurements.
+
+| Vector | 16 bytes |
+|---|---|
+| `GET_INFO` | `01 01 01 10 00 00 00 00 00 00 00 00 00 00 00 00` |
+| `SET_SCENE` | `01 01 02 11 04 02 20 64 00 00 00 00 00 00 00 00` |
+| `SET_RGB` | `01 01 03 12 20 00 00 00 20 00 00 00 20 00 00 00` |
+| `PING` | `01 01 04 FF 00 00 00 00 00 00 00 00 00 00 00 00` |
+| `INPUT_EVENT` | `01 01 81 7F 05 03 FF 00 05 00 00 00 00 00 00 00` |
+| `DEVICE_INFO` | `01 01 82 10 01 00 00 3F 00 04 01 03 FF 00 00 00` |
+| `ACK` | `01 01 83 11 02 00 00 00 00 00 00 00 00 00 00 00` |
+| `ERROR/UNSUPPORTED_VERSION` | `01 01 84 20 01 01 01 00 00 00 00 00 00 00 00 00` |
+| `ERROR/UNKNOWN_MESSAGE_TYPE` | `01 01 84 21 7F 02 02 00 00 00 00 00 00 00 00 00` |
+| `ERROR/WRONG_DIRECTION` | `01 01 84 22 81 03 02 00 00 00 00 00 00 00 00 00` |
+| `ERROR/INVALID_PAYLOAD` | `01 01 84 23 01 04 04 00 00 00 00 00 00 00 00 00` |
+| `ERROR/UNSUPPORTED_VALUE` | `01 01 84 24 03 05 04 00 00 00 00 00 00 00 00 00` |
+
+The dependency-free host codec and its vector check live in `src/CodexKeyboard.Protocol` and `tests/CodexKeyboard.Protocol.Check`. Run:
+
+```powershell
+dotnet run --project .\tests\CodexKeyboard.Protocol.Check\CodexKeyboard.Protocol.Check.csproj
+```
 
 ### LED strategy
 
@@ -191,7 +312,7 @@ The PC does not continuously stream animation frames. It sends a scene when stat
 | Action succeeded / failed | UIA postcondition | To implement |
 | Turn active / waiting for approval / completed | Semantic UIA anchors | Must be tested before use |
 
-Colors, brightness, and speed are not fixed yet and must be calibrated on the real device. The firmware must always enforce a maximum brightness limit.
+Colors, default brightness, and speed are not fixed yet and must be calibrated on the real device. RGB components use their full native 8-bit range (`0`–`255`); firmware introduces no lower artificial ceiling.
 
 ## Windows companion
 
@@ -262,14 +383,14 @@ The UI Automation technique has already changed the visible task effort between 
 |---|---:|---|
 | Stock `1189:8890` device analysis | Completed | Remaining useful information incorporated into this README |
 | Effort control through UI Automation | Tested on the real PC | Repeat after companion implementation |
-| Custom firmware baseline | Flashed and validated | Preserve the verified recovery behavior during R4 |
+| Custom firmware baseline | Replaced by the flashed R4 image | Re-run the physical recovery checks |
 | Upstream source review | Completed | Physical Button 1/3 pinout verified |
-| Vendor HID USB architecture | Defined | Freeze byte layout with a codec test |
+| Vendor HID USB architecture | One vendor-only collection verified on Windows | Reconfirm after reconnect and recovery |
 | Hidden companion architecture | Defined | Create the minimal `WinExe` project |
 | Baseline firmware build | Completed | Repeat with `pwsh -File .\Build-Firmware.ps1` |
-| Device flash and bench validation | Completed and verified | Preserve the R2 test record during firmware changes |
-| Firmware/host HID protocol | Not started | Loopback and hot-plug |
-| RGB scenes | Not started | Calibrate brightness and timing |
+| Device flash and bench validation | R4 write/verify, inputs, and LEDs completed | Finish reconnect and recovery |
+| Firmware/host HID protocol | Commands, responses, errors, timeout, and primitive inputs verified | Exercise reconnect and recovery |
+| RGB scenes | R4 rendering physically verified | Final state calibration remains in R7 |
 | Codex state detection | Partial | Capture UIA anchors for each state |
 | End-to-end testing | Not started | One physical event equals one verified action |
 
@@ -288,8 +409,8 @@ R1 Build  ───┘                                                    -> R6 
 | R0 | Hardware truth and recovery | Joint | Completed |
 | R1 | Reproducible firmware baseline | Codex | Completed |
 | R2 | First flash and upstream validation | Joint | Completed |
-| R3 | HID v1 contract | Codex | Next |
-| R4 | CodexKeyboard firmware | Codex + user testing | Waiting for R3 |
+| R3 | HID v1 contract | Codex | Completed |
+| R4 | CodexKeyboard firmware | Codex + user testing | Flashed; physical gate partially complete |
 | R5 | Hidden HID companion | Codex | Waiting for R4 |
 | R6 | End-to-end Codex control | Codex + user testing | Waiting for R5 |
 | R7 | Verified LED feedback | Joint | Waiting for R6 |
@@ -391,6 +512,10 @@ R1 Build  ───┘                                                    -> R6 
 
 **Stop condition:** firmware and companion must not invent separate enums outside the contract.
 
+**Evidence recorded on July 21, 2026:** the README defines all layouts, values, ordering, timing, identity, and failure behavior; the dependency-free .NET 8 codec encodes host commands and validates and decodes device messages; `dotnet run --project .\tests\CodexKeyboard.Protocol.Check\CodexKeyboard.Protocol.Check.csproj` passed all 12 binary vectors, all five wire error codes, nine malformed or unsafe cases, and sequence wraparound.
+
+**Result:** R3 is completed. The frozen contract and executable oracle satisfy the exit gate and unblock R4.
+
 ### R4 — CodexKeyboard firmware
 
 **Operations**
@@ -407,6 +532,24 @@ R1 Build  ───┘                                                    -> R6 
 **Exit gate:** Windows does not see it as a keyboard, the six actions arrive exactly once, RGB and ACK work, and timeout returns to the companion-absent scene.
 
 **Hardware verification:** slow/fast rotations, simultaneous presses, reconnect, and recovery.
+
+**Implementation evidence recorded on July 21, 2026:** the configuration menu, automatic macros, keyboard reports, and mouse reports were removed. The firmware now exposes one 16-byte vendor HID IN/OUT collection with the frozen identity and a serial generated from the five UID bytes. It implements 8 ms button debouncing, the named three-transition encoder calibration, an eight-event FIFO with sticky overflow recovery, all four host commands and four device messages, a three-second heartbeat watchdog, and non-blocking 20 ms LED rendering over the full 8-bit component range. Both bootloader entry paths remain in the source.
+
+`pwsh -File .\Build-Firmware.ps1` completed with the pinned CH55xDuino `0.0.20` toolchain. The current full-range image uses 10,746 / 14,336 bytes of flash (74%) and 311 / 876 bytes of global RAM (35%), and `.build/firmware/CodexKeyboard.ino.hex` has SHA-256 `218d80be5162c7a8127487547da4a330247c2da02e9f369ecce2f62c6c961eb9`. No R4 source warning remains; the toolchain still emits the four known upstream `_dummy_variable` diagnostics. The protocol check passes 12 binary vectors, nine rejection cases, sequence wraparound, overflow-state resynchronization, and direct parity checks between the host values and firmware headers/descriptor.
+
+**Flash and USB evidence recorded on July 21, 2026:** the first synchronized upload attempt expired without finding the bootloader and performed no write. During the second attempt, the runtime chord exposed bootloader `2.5.0`; `vnproch55x` identified the CH552, wrote all 10,864 bytes, completed its full verify pass, and reset the device. Arduino CLI then reported that it could not discover a new upload port, but post-reset evidence confirms successful programming: Windows exposes one healthy vendor-defined HID collection and no keyboard or mouse collection. The USB device serial is `CK498AED4EBD`, matching the frozen `CK` plus ten-uppercase-hex-digit format.
+
+After physical calibration showed that the initial component ceiling of 32 was unnecessarily dim, the artificial clamp was removed and the device now advertises and accepts the complete native range `0`–`255`. The replacement image was written on the first synchronized bootloader attempt: `vnproch55x` wrote all 10,746 bytes, completed its full verify pass, and reset successfully. The post-flash `DEVICE_INFO` report was `01 01 82 20 01 00 00 3F 00 04 01 03 FF 00 00 00`, confirming maximum component value 255. A 30-second physical white test drove every component of every LED to 255; the user confirmed that the resulting brightness is appropriate.
+
+The physical HID probe received the exact `DEVICE_INFO` v1 payload for firmware `1.0.0`, capabilities `0x003F`, four buttons, one encoder, three LEDs, and maximum component value 255. `PING`, `SET_SCENE`, and `SET_RGB` returned the expected ACKs. A nonzero reserved byte returned `INVALID_PAYLOAD` with detail byte 4, protocol version 2 returned `UNSUPPORTED_VERSION` with expected version 1, and `GET_INFO` successfully reopened a session after the 3.4-second heartbeat expiry.
+
+During the synchronized physical input test, the user pressed and released Button 1, Button 2, Button 3, and the knob, then rotated one detent in each direction. The probe received exactly ten reports with consecutive event sequences `0` through `9`: eight matching press/release reports with the correct post-event button masks, one clockwise `+1`, and one counterclockwise `-1`. A second test used three slow and ten fast detents in each direction; it received exactly 26 reports, split into 13 clockwise and 13 counterclockwise events with consecutive sequences `0` through `25` and no gap. The named three-transition encoder calibration therefore passes both tested speeds on the physical device.
+
+For simultaneous input, the user pressed and released Button 1 and Button 2 together repeatedly. The probe received 16 reports with consecutive sequences `0` through `15`, no overflow flag, correct per-control edges, button mask `0x03` while both controls were active, and coherent intermediate masks regardless of physical edge ordering.
+
+For LED rendering, the user confirmed distinct red, green, and blue output on LEDs 1, 2, and 3, followed by the expected two-LED orange `EFFORT_HIGH` breathe effect and automatic return to the dim companion-absent animation after heartbeat expiry. A separate `EFFORT_ULTRA` test confirmed the magenta breathe effect across all three LEDs and the same watchdog return. This completes the R4 color order, full-range brightness, multi-LED effect, non-blocking animation, and timeout checks; final semantic scene calibration remains in R7.
+
+**Result:** the R4 implementation, flash, vendor-only USB identity, protocol, controls, encoder, and LED gates are complete, but R4 is not yet completed. Its exit gate still requires reconnect and both recovery results.
 
 ### R5 — Hidden HID companion
 
@@ -475,12 +618,10 @@ Every operation passes through one UI Automation queue. A changed window/task, a
 
 ### Next operation
 
-Start R3 by freezing the HID v1 contract before changing the firmware USB stack:
+Complete the remaining R4 hardware exit gate:
 
-- finalize the 16-byte report IDs, enums, payloads, sequence behavior, heartbeat, ACK/ERROR rules, capabilities, and incompatible-version handling;
-- define one binary vector for every valid message and essential error case;
-- implement the pure host codec and one automated test that makes those vectors the protocol oracle;
-- resolve the final VID/PID and USB strings before introducing the new descriptor in R4.
+- verify a normal USB reconnect;
+- repeat knob-on-connect recovery and runtime chord recovery before marking R4 complete.
 
 ## Security and limitations
 
@@ -495,7 +636,7 @@ Start R3 by freezing the HID v1 contract before changing the firmware USB stack:
 
 ## USB identity and licenses
 
-The upstream project uses `VID 1209 / PID C55D`. That value is not automatically treated as the final CodexKeyboard identity: an appropriate stable PID must be assigned or verified before firmware distribution.
+CodexKeyboard private v1 uses `VID 1209 / PID C55D`, the pid.codes allocation for ch55xduino HID devices. The vendor-defined collection, exact strings, per-chip serial, and `DEVICE_INFO` handshake distinguish this device for the companion. A project-specific PID remains a public-distribution gate because the family PID is not unique to CodexKeyboard.
 
 The upstream repository declares the [Creative Commons Attribution-ShareAlike 3.0 Unported](https://github.com/eccherda/ch552g_mini_keyboard/blob/master/LICENCE) license. Until a specific review is completed, the derivative firmware must preserve attribution, notices, and share-alike conditions. The companion written from scratch remains separate from the derivative code.
 
@@ -503,6 +644,8 @@ The upstream repository declares the [Creative Commons Attribution-ShareAlike 3.
 
 - [Upstream CH552G firmware](https://github.com/eccherda/ch552g_mini_keyboard)
 - [ch55xduino](https://github.com/DeqingSun/ch55xduino)
+- [pid.codes allocation for ch55xduino HID devices](https://pid.codes/org/ThinkCreate/)
+- [WCH CH551/CH552 datasheet](https://www.wch-ic.com/downloads/CH552DS1_PDF.html)
 - [Independent CH552 bootloader 2.50 disassembly discussion](https://www.mikrocontroller.net/attachment/638176/mc.pdf) — supporting reverse-engineering evidence for the timeout, not WCH documentation
 - [Codex app server](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md)
 - [Codex commands and deep links](https://learn.chatgpt.com/docs/developer-commands)

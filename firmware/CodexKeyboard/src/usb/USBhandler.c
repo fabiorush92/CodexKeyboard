@@ -1,15 +1,10 @@
-/*
- created by Deqing Sun for use with CH55xduino
- */
+/* Created by Deqing Sun for use with CH55xduino. */
 
 #include "USBhandler.h"
 
 #include "USBconstant.h"
 
-// Keyboard functions:
-
-void USB_EP2_IN();
-void USB_EP2_OUT();
+void USB_transport_reset(void);
 
 // clang-format off
 __xdata __at (EP0_ADDR) uint8_t Ep0Buffer[8];
@@ -26,9 +21,72 @@ volatile __xdata uint8_t UsbConfig;
 
 __code uint8_t *__data pDescr;
 
+static __data uint8_t SerialDescriptorActive;
+static __data uint8_t DescriptorOffset;
+
 volatile uint8_t usbMsgFlags = 0; // uint8_t usbMsgFlags copied from VUSB
 
 inline void NOP_Process(void) {}
+
+static uint8_t uid_byte(uint8_t index)
+{
+  uint16_t address;
+  switch (index)
+  {
+  case 0:
+    address = ROM_CHIP_ID_HX;
+    break;
+  case 1:
+    address = ROM_CHIP_ID_LO;
+    break;
+  case 2:
+    address = ROM_CHIP_ID_LO + 1;
+    break;
+  case 3:
+    address = ROM_CHIP_ID_HI;
+    break;
+  default:
+    address = ROM_CHIP_ID_HI + 1;
+    break;
+  }
+  return *((__code uint8_t *)address);
+}
+
+static uint8_t hex_digit(uint8_t value)
+{
+  value &= 0x0F;
+  return value < 10 ? '0' + value : 'A' + value - 10;
+}
+
+static uint8_t serial_descriptor_byte(uint8_t index)
+{
+  if (index == 0)
+  {
+    return 26;
+  }
+  if (index == 1)
+  {
+    return DTYPE_String;
+  }
+  if (index & 1)
+  {
+    return 0;
+  }
+
+  uint8_t character = (index - 2) >> 1;
+  if (character == 0)
+  {
+    return 'C';
+  }
+  if (character == 1)
+  {
+    return 'K';
+  }
+
+  character -= 2;
+  uint8_t value = uid_byte(character >> 1);
+  return hex_digit(character & 1 ? value : value >> 4);
+}
 
 void USB_EP0_SETUP() {
   __data uint8_t len = USB_RX_LEN;
@@ -37,6 +95,8 @@ void USB_EP0_SETUP() {
     len = 0; // Default is success and upload 0 length
     SetupReq = UsbSetupBuf->bRequest;
     usbMsgFlags = 0;
+    SerialDescriptorActive = 0;
+    DescriptorOffset = 0;
     if ((UsbSetupBuf->bRequestType & USB_REQ_TYP_MASK) !=
         USB_REQ_TYP_STANDARD) // Not standard request
     {
@@ -84,22 +144,21 @@ void USB_EP0_SETUP() {
         case 3:
           if (UsbSetupBuf->wValueL == 0) {
             pDescr = LanguageDescriptor;
-          } else if (UsbSetupBuf->wValueL == 1) {
-            pDescr = (__code uint8_t *)ManufacturerDescriptor;
-          } else if (UsbSetupBuf->wValueL == 2) {
+          } else if (UsbSetupBuf->wValueL == 1 ||
+                     UsbSetupBuf->wValueL == 2) {
             pDescr = (__code uint8_t *)ProductDescriptor;
           } else if (UsbSetupBuf->wValueL == 3) {
-            pDescr = (__code uint8_t *)SerialDescriptor;
+            SerialDescriptorActive = 1;
           } else {
             len = 0xff;
             break;
           }
-          len = pDescr[0];
+          len = SerialDescriptorActive ? 26 : pDescr[0];
           break;
         case 0x22:
           if (UsbSetupBuf->wValueL == 0) {
             pDescr = (__code uint8_t *)ReportDescriptor;
-            len = ConfigurationDescriptor.HID_KeyboardHID.HIDReportLength;
+            len = ConfigurationDescriptor.HID_Descriptor.HIDReportLength;
           } else {
             len = 0xff;
           }
@@ -116,10 +175,16 @@ void USB_EP0_SETUP() {
                     ? DEFAULT_ENDP0_SIZE
                     : SetupLen; // transmit length for this packet
           for (__data uint8_t i = 0; i < len; i++) {
-            Ep0Buffer[i] = pDescr[i];
+            Ep0Buffer[i] = SerialDescriptorActive
+                               ? serial_descriptor_byte(i)
+                               : pDescr[i];
           }
           SetupLen -= len;
-          pDescr += len;
+          if (SerialDescriptorActive) {
+            DescriptorOffset = len;
+          } else {
+            pDescr += len;
+          }
         }
         break;
       case USB_SET_ADDRESS:
@@ -306,11 +371,17 @@ void USB_EP0_IN() {
                              ? DEFAULT_ENDP0_SIZE
                              : SetupLen; // send length
     for (__data uint8_t i = 0; i < len; i++) {
-      Ep0Buffer[i] = pDescr[i];
+      Ep0Buffer[i] = SerialDescriptorActive
+                         ? serial_descriptor_byte(DescriptorOffset + i)
+                         : pDescr[i];
     }
     // memcpy( Ep0Buffer, pDescr, len );
     SetupLen -= len;
-    pDescr += len;
+    if (SerialDescriptorActive) {
+      DescriptorOffset += len;
+    } else {
+      pDescr += len;
+    }
     UEP0_T_LEN = len;
     UEP0_CTRL ^= bUEP_T_TOG; // Switch between DATA0 and DATA1
   } break;
@@ -443,6 +514,7 @@ void USBInterrupt(void) { // inline not really working in multiple files in SDCC
     UIF_BUS_RST = 0;
 
     UsbConfig = 0;
+    USB_transport_reset();
 
     // Clear interrupt flag
   }

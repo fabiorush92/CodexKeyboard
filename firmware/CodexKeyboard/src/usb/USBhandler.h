@@ -1,5 +1,5 @@
-#ifndef __USB_HANDLER_H__
-#define __USB_HANDLER_H__
+#ifndef __CODEX_KEYBOARD_USB_HANDLER_H__
+#define __CODEX_KEYBOARD_USB_HANDLER_H__
 
 // clang-format off
 #include <stdint.h>

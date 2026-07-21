@@ -1,30 +1,13 @@
 #pragma once
-// Key colors (hue value: 0..191)
-#define NEO_RED 0    // red
-#define NEO_YEL 32   // yellow
-#define NEO_GREEN 64 // green
-#define NEO_CYAN 96  // cyan
-#define NEO_BLUE 128 // blue
-#define NEO_MAG 160  // magenta
-#define NEO_WHITE 191  // white
-#define NEO_BRIGHT_KEYS 2
 
-enum led_keyboard_mode_t
-{
-  LED_LOOP,
-  LED_FIX,
-  LED_BLINK
-};
+#include <stdint.h>
 
-// change led mode
-void led_set_mode(enum led_keyboard_mode_t mode);
+#define LED_MAX_COMPONENT 255
 
-// set led color in FIX mode
-void led_set_color_hue(uint8_t led0, uint8_t led1, uint8_t led2);
-
-// update led task
-void led_update();
-
-//if in loop mode, change color to pressed key
-void led_presskey(int key);
-
+void led_setup(void);
+void led_set_scene(uint8_t scene, uint8_t effect, uint8_t brightness,
+                   uint16_t period_10ms);
+void led_set_rgb(const __xdata uint8_t *rgb);
+void led_show_absent(void);
+void led_show_bootloader(void);
+void led_update(uint32_t now);
