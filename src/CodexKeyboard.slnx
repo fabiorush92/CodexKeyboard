@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="CodexKeyboard.Companion/CodexKeyboard.Companion.csproj" />
+  <Project Path="CodexKeyboard.Device/CodexKeyboard.Device.csproj" />
+  <Project Path="CodexKeyboard.Protocol/CodexKeyboard.Protocol.csproj" />
+</Solution>
