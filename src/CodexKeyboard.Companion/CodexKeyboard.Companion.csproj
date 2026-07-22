@@ -1,13 +1,15 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <OutputType>Exe</OutputType>
+    <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <PlatformTarget>x64</PlatformTarget>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\src\CodexKeyboard.Device\CodexKeyboard.Device.csproj" />
+    <ProjectReference Include="..\CodexKeyboard.Device\CodexKeyboard.Device.csproj" />
+    <ProjectReference Include="..\CodexKeyboard.Protocol\CodexKeyboard.Protocol.csproj" />
   </ItemGroup>
 </Project>

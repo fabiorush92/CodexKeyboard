@@ -4,7 +4,7 @@ Hardware controller for Codex Desktop based on the AliExpress USB mini keyboard 
 
 The project completely replaces the stock firmware and uses an almost invisible Windows companion to translate physical events into verified Codex Desktop actions and report state through the LEDs.
 
-> Last updated: July 22, 2026 — Phase: R4 firmware and all physical exit gates completed; R5 hidden companion is ready to begin
+> Last updated: July 22, 2026 — Phase: R5 completed; R6 end-to-end Codex control is next
 
 ## Goal
 
@@ -21,7 +21,7 @@ The project completely replaces the stock firmware and uses an almost invisible 
 | Firmware | Minimal fork of [`eccherda/ch552g_mini_keyboard`](https://github.com/eccherda/ch552g_mini_keyboard), replacing keyboard/mouse macros with the CodexKeyboard protocol. |
 | USB | One bidirectional vendor-defined HID collection. The device emits no global keystrokes and requires no custom driver. |
 | LEDs | The companion sends a state or RGB frame; effects and animations run locally in the firmware. |
-| Companion | Per-user C# Windows application, built as `WinExe`, with no console or main window and only a tray icon for status, diagnostics, and exit. |
+| Companion | One per-user C# `WinExe`: tray-only in normal use, with an on-demand WinForms hardware-test window. The same process and HID session serve both modes. |
 | Startup | Per-user autostart; same interactive desktop and integrity level as Codex, without elevation. |
 | Codex control | Official deep links where available, native Windows APIs, and semantic UI Automation with postcondition verification. |
 | App server | No second app server is started to control the task owned by Codex Desktop. |
@@ -31,7 +31,7 @@ The project completely replaces the stock firmware and uses an almost invisible 
 
 ```mermaid
 flowchart LR
-    H["CH552G: keys, encoder, and LEDs"] <-->|"16-byte vendor HID"| C["Per-user C# companion"]
+    H["CH552G: keys, encoder, and LEDs"] <-->|"16-byte vendor HID"| C["Per-user C# companion: tray + test UI"]
     C -->|"deep links / Win32 / UI Automation"| D["Codex Desktop"]
     D -->|"re-read and verified state"| C
     C -->|"scenes or RGB"| H
@@ -329,8 +329,8 @@ The PC does not continuously stream animation frames. It sends a scene when stat
 | Scene | Source | Status |
 |---|---|---:|
 | Boot / bootloader | Firmware | Guarded transition and blue breathe-to-solid indication physically verified |
-| Companion absent | Heartbeat timeout | To implement |
-| Companion connected | HID handshake | To implement |
+| Companion absent | Heartbeat timeout | Implemented and physically verified through the integrated R5 test |
+| Companion connected | HID handshake | Implemented and physically verified through the integrated R5 companion |
 | Codex unavailable | Window/process lookup | To implement |
 | Medium / High / Ultra effort | Verified UIA state | Technique already tested |
 | Action succeeded / failed | UIA postcondition | To implement |
@@ -342,13 +342,14 @@ Colors, default brightness, and speed are not fixed yet and must be calibrated o
 
 ### Process shape
 
-The companion will be a small per-user application:
+The companion is a small per-user application:
 
 - `WinExe` output with no console;
-- no main window or taskbar presence;
+- no permanent main window or taskbar presence;
 - a single instance;
-- tray icon with status, reconnect, diagnostics, and exit;
-- optional autostart for the current user;
+- tray icon with status, reconnect, hardware tests, and exit;
+- an on-demand WinForms hardware-test window; visible means hardware-test mode, while closing or minimizing it restores normal companion mode and hides it in the tray;
+- optional autostart for the current user is planned for R8;
 - no Windows Service, driver, administrator privileges, or `uiAccess`.
 
 A Windows Service is unsuitable because it would be isolated in Session 0, while controlling Codex must happen in the user's desktop session.
@@ -364,6 +365,34 @@ The first version uses only .NET and native Windows APIs:
 - Windows UI Automation for Codex controls.
 
 Avalonia, MVVM, a database, a local web server, and external HID libraries are not planned while native APIs cover the use case.
+
+### Integrated hardware tests
+
+The hardware tester is not a second executable and never opens a competing device handle. `CodexKeyboard.Companion` owns one exact HID session in both modes, while its compact single-screen test window is only a view and command surface over that owner. A local-session named ownership semaphore also prevents the development bootloader tool or another companion process from consuming reports concurrently.
+
+The window exposes:
+
+- compact live press/release indicators for Button 1, Button 2, Button 3, and knob press;
+- visual clockwise or counterclockwise encoder feedback without persistent tick counters;
+- sequence-gap, queue-overflow, stale-queue draining, and release-resynchronization feedback;
+- `GET_INFO`, `PING`, all protocol scenes and effects, the full `0`–`255` brightness range, and three native Windows color selectors for independent LED RGB values;
+- a watchdog test that serializes all host operations, remains silent for 3.75 seconds, then uses `GET_INFO` to recover the session; the operator still confirms the intervening companion-absent LED scene visually;
+- guarded `ENTER_BOOTLOADER` behind an explicit warning and confirmation. Entry from this UI creates no development-tool authorization marker, so recovery is limited to the ROM timeout or a USB power cycle. Explicit `ISP_END` remains available only for a transition initiated by `CodexKeyboard.BootloaderTool enter`, because it depends on the WCH interface and a short-lived authorization; the final companion remains driverless.
+
+Inputs, device output, and diagnostics share one screen without tabs or raw-event tables. Safety and bootloader warnings live in the Diagnostics section. Diagnostics are bounded to 500 entries and remain available while the test window is hidden. Successful heartbeat traffic is intentionally not logged. Closing the window requests the firmware's companion-connected scene and hides the UI; double-clicking the tray icon or choosing **Open hardware tests** shows it again. Tray **Exit** is the only normal way to stop the process.
+
+Build and run the test window from the repository root:
+
+```powershell
+dotnet build .\src\CodexKeyboard.Companion\CodexKeyboard.Companion.csproj
+dotnet run --project .\src\CodexKeyboard.Companion\CodexKeyboard.Companion.csproj
+```
+
+Use `-- --tray` for the future autostart form with no initial test window. The current project targets x64 .NET 8 on Windows and uses only the framework plus native SetupAPI/HID calls.
+
+The shared `CodexKeyboard.Device` layer owns exact enumeration, two overlapped handles with independent read and write streams, command serialization, the single report reader, and fail-closed response routing. Separate streams are required because a permanently pending read on the physical device serialized writes when both directions shared one `FileStream`. Input reports are routed without consuming a command's terminal response; malformed, unsolicited, mismatched, timed-out, or incomplete terminal traffic faults the session and forces a fresh handshake. The higher-level companion alone owns heartbeat and reconnect policy.
+
+Development-tool ROM exit adds a separate local-session transition-verification semaphore and a ten-second temporary authorization marker. While either is active, normal companion discovery intentionally returns no device. This prevents its reconnect loop from taking ownership of the returning runtime before `CodexKeyboard.BootloaderTool` verifies the exact postcondition. The marker is created only by the development tool's guarded `enter` flow and is consumed by its matching `exit`; it is not a general bootloader identity mechanism.
 
 ### Controlling Codex Desktop
 
@@ -407,13 +436,13 @@ The UI Automation technique has already changed the visible task effort between 
 |---|---:|---|
 | Stock `1189:8890` device analysis | Completed | Remaining useful information incorporated into this README |
 | Effort control through UI Automation | Tested on the real PC | Repeat after companion implementation |
-| Custom firmware baseline | Replaced by the completed and physically verified R4 image | R5 companion integration |
+| Custom firmware baseline | Replaced by the completed and physically verified R4 image | Completed |
 | Upstream source review | Completed | Physical Button 1/3 pinout verified |
-| Vendor HID USB architecture | One vendor-only collection and handshake reconfirmed after both recovery paths | Integrate with the R5 companion |
-| Hidden companion architecture | Defined | Create the minimal `WinExe` project |
+| Vendor HID USB architecture | Integrated with the shared R5 transport; handshake and reconnect acceptance passed | Completed |
+| Hidden companion architecture | Completed as one tray/test-mode `WinExe` and one HID owner | Begin R6 Codex control |
 | Baseline firmware build | Completed | Repeat with `pwsh -File .\Build-Firmware.ps1` |
-| Device flash and bench validation | Completed, including both recovery paths on firmware `1.1.0` | R5 companion integration |
-| Firmware/host HID protocol | Amended contract passes 13 vectors, 10 rejection cases, firmware parity, and all physical R4 gates | Integrate with the R5 companion |
+| Device flash and bench validation | Completed, including both recovery paths and integrated companion tests on firmware `1.1.0` | Completed |
+| Firmware/host HID protocol | Contract and integrated R5 physical acceptance passed | Begin R6 Codex control |
 | Remote bootloader control | Guarded PC entry, blue indication, explicit WCH exit, and both physical recovery paths verified | Completed |
 | RGB scenes | R4 rendering physically verified | Final state calibration remains in R7 |
 | Codex state detection | Partial | Capture UIA anchors for each state |
@@ -436,8 +465,8 @@ R1 Build  ───┘                                                    -> R6 
 | R2 | First flash and upstream validation | Joint | Completed |
 | R3 | HID v1 contract | Codex | Completed |
 | R4 | CodexKeyboard firmware | Codex + user testing | Completed |
-| R5 | Hidden HID companion | Codex | Ready |
-| R6 | End-to-end Codex control | Codex + user testing | Waiting for R5 |
+| R5 | Hidden HID companion and integrated hardware tests | Codex + user testing | Completed |
+| R6 | End-to-end Codex control | Codex + user testing | Next |
 | R7 | Verified LED feedback | Joint | Waiting for R6 |
 | R8 | Packaging and v1 acceptance | Joint | Waiting for R7 |
 
@@ -605,6 +634,16 @@ The first development-tool `status` probe failed closed before sending a command
 
 **Exit gate:** it works whether the device or companion starts first and recovers from unplug/replug without duplicate inputs.
 
+**Implementation evidence recorded on July 22, 2026:** `CodexKeyboard.Companion` now builds as an x64 .NET 8 `WinExe` with zero warnings. It has one tray lifecycle, one single-instance mutex, a bounded diagnostic store, an on-demand hardware-test window, serialized commands and heartbeat, automatic reconnect, strict identity and `DEVICE_INFO` validation, and no external HID package. The shared transport is also used by `CodexKeyboard.BootloaderTool`, which removes the former duplicate runtime enumerator.
+
+The first physical shared-transport probe exposed that one `FileStream` with a permanently pending read could serialize its write. The final transport opens separate overlapped read-only and write-only handles after the same exact SetupAPI/HID verification. A fresh development-tool probe then returned `RUNTIME_READY: firmware 1.1.0, capabilities 0x007F, serial CK498AED4EBD`. While the running companion owned that runtime, a second development-tool `status` command failed closed with `The exact CodexKeyboard runtime is already owned by another process.` Starting a second companion returned exit code `0` immediately and left exactly one companion process running, which verifies the single-instance guard without disturbing the active HID session.
+
+`dotnet run --project .\tests\CodexKeyboard.Device.Check\CodexKeyboard.Device.Check.csproj` passes report routing with an input event interleaved before an ACK, rejection of a mismatched terminal response, expected bootloader disconnect handling, transition-authorization timing, sequence wraparound, gap recovery, button-release recovery, and stale FIFO draining after queue overflow. The development tool self-test also covers authorization-marker validation and single consumption without touching the production marker. The original protocol oracle still passes all 13 vectors, 10 rejection cases, and firmware parity. The complete companion builds with zero warnings.
+
+**Physical acceptance recorded on July 22, 2026:** the user confirmed the complete R5 matrix: all four press/release inputs, both encoder directions, device commands, scenes, independent RGB and full brightness, watchdog fallback and recovery, default and tray startup, close/minimize/reopen lifecycle, diagnostic persistence, start order, single-instance behavior, unplug/replug without duplicate input, tray exit, guarded bootloader entry, and recovery.
+
+**Result:** R5 is completed. The hidden companion owns one verified HID session, exposes the integrated test UI only on demand, and recovers safely across process, USB, watchdog, and bootloader lifecycle transitions.
+
 ### R6 — End-to-end Codex control
 
 Actions are added one at a time in this order:
@@ -657,11 +696,7 @@ Every operation passes through one UI Automation queue. A changed window/task, a
 
 ### Next operation
 
-Begin R5 with the smallest hidden companion slice:
-
-- create the per-user C# `WinExe` process with no main window;
-- reuse the proven native SetupAPI/HID enumeration and protocol codec;
-- connect, perform `GET_INFO`, maintain heartbeat, and expose bounded tray diagnostics before adding Codex actions.
+Begin R6 with one operation at a time: first locate, restore, and activate exactly one unambiguous Codex Desktop window through Win32 and UI Automation, then verify the visible postcondition before adding the next physical mapping.
 
 ## Security and limitations
 
@@ -672,6 +707,7 @@ Begin R5 with the smallest hidden companion slice:
 - errors fail closed: no follow-up action and no false-success LED;
 - a Codex update may change the UIA tree and require new validation;
 - a USB device can spoof VID/PID/serial: HID identity reduces mistakes but is not strong authentication.
+- the companion and development bootloader tool use a local-session named ownership semaphore and fail closed if another process already owns the exact runtime; the development transition verifier additionally uses its own semaphore and ten-second marker so normal reconnect cannot steal the returning-runtime handshake. These controls prevent accidental response theft but are not a security boundary against another process in the same session.
 - the final HID firmware and companion remain driverless; the WCH driver currently bound only to development-time bootloader `4348:55E0` is not required by the final HID runtime and can be removed after bootloader development and recovery testing are complete.
 
 ## USB identity and licenses
