@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #define LED_MAX_COMPONENT 255
+#define LED_BOOTLOADER_TRANSITION_MS 1200
 
 void led_setup(void);
 void led_set_scene(uint8_t scene, uint8_t effect, uint8_t brightness,

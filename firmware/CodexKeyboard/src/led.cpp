@@ -118,9 +118,24 @@ void led_show_absent(void)
 
 void led_show_bootloader(void)
 {
-  NEO_writeColor(0, 0, LED_MAX_COMPONENT, LED_MAX_COMPONENT);
-  NEO_writeColor(1, 0, 0, LED_MAX_COMPONENT);
-  NEO_writeColor(2, LED_MAX_COMPONENT, 0, LED_MAX_COMPONENT);
+  const uint16_t half = LED_BOOTLOADER_TRANSITION_MS >> 1;
+  for (uint16_t elapsed = 0; elapsed < LED_BOOTLOADER_TRANSITION_MS;
+       elapsed += ANIMATION_FRAME_MS)
+  {
+    uint16_t triangle = elapsed < half ? elapsed : LED_BOOTLOADER_TRANSITION_MS - elapsed;
+    uint8_t blue = ((uint32_t)LED_MAX_COMPONENT * triangle) / half;
+    for (uint8_t i = 0; i < LED_COUNT; i++)
+    {
+      NEO_writeColor(i, 0, 0, blue);
+    }
+    NEO_update();
+    delay(ANIMATION_FRAME_MS);
+  }
+
+  for (uint8_t i = 0; i < LED_COUNT; i++)
+  {
+    NEO_writeColor(i, 0, 0, LED_MAX_COMPONENT);
+  }
   NEO_update();
 }
 

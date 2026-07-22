@@ -4,9 +4,9 @@
 #include "protocol.h"
 #include "usb/USBHID.h"
 #include "usb/USBhandler.h"
+#include "util.h"
 
 #define INPUT_QUEUE_SIZE 8
-#define CK_CAPABILITIES 0x003F
 #define CK_INPUT_FLAG_OVERFLOW 0x01
 
 typedef struct
@@ -28,7 +28,9 @@ static uint8_t current_buttons_s;
 static uint8_t overflow_pending_s;
 static uint8_t response_pending_s;
 static uint8_t session_active_s;
+static uint8_t bootloader_pending_s;
 static uint32_t last_host_command_s;
+static const __code char bootloader_arm_token_s[] = CK_BOOTLOADER_ARM_TOKEN;
 
 static void clear_report(uint8_t type, uint8_t sequence)
 {
@@ -55,6 +57,7 @@ static void close_session(void)
 {
   session_active_s = 0;
   response_pending_s = 0;
+  bootloader_pending_s = 0;
   clear_queue();
   led_show_absent();
 }
@@ -102,9 +105,9 @@ static void make_ack(uint8_t sequence, uint8_t command)
 static void make_device_info(uint8_t sequence)
 {
   clear_report(CK_MSG_DEVICE_INFO, sequence);
-  report_s[4] = 1;
-  report_s[5] = 0;
-  report_s[6] = 0;
+  report_s[4] = CK_FIRMWARE_VERSION_MAJOR;
+  report_s[5] = CK_FIRMWARE_VERSION_MINOR;
+  report_s[6] = CK_FIRMWARE_VERSION_PATCH;
   report_s[7] = CK_CAPABILITIES & 0xFF;
   report_s[8] = CK_CAPABILITIES >> 8;
   report_s[9] = 4;
@@ -134,7 +137,7 @@ static void process_command(uint8_t length, uint32_t now)
     make_error(sequence, type, CK_ERROR_WRONG_DIRECTION, 2);
     return;
   }
-  if (type < CK_MSG_GET_INFO || type > CK_MSG_PING)
+  if (type < CK_MSG_GET_INFO || type > CK_MSG_ENTER_BOOTLOADER)
   {
     make_error(sequence, type, CK_ERROR_UNKNOWN_MESSAGE_TYPE, 2);
     return;
@@ -173,6 +176,16 @@ static void process_command(uint8_t length, uint32_t now)
   case CK_MSG_SET_RGB:
     invalid = first_nonzero(13);
     break;
+  case CK_MSG_ENTER_BOOTLOADER:
+    for (uint8_t i = 0; i < CK_BOOTLOADER_ARM_TOKEN_LENGTH; i++)
+    {
+      if (report_s[4 + i] != (uint8_t)bootloader_arm_token_s[i])
+      {
+        invalid = 4 + i;
+        break;
+      }
+    }
+    break;
   }
 
   if (invalid != 0xFF)
@@ -199,6 +212,10 @@ static void process_command(uint8_t length, uint32_t now)
   case CK_MSG_PING:
     make_ack(sequence, type);
     break;
+  case CK_MSG_ENTER_BOOTLOADER:
+    make_ack(sequence, type);
+    bootloader_pending_s = 1;
+    break;
   }
 }
 
@@ -207,6 +224,7 @@ void protocol_setup(void)
   current_buttons_s = 0;
   response_pending_s = 0;
   session_active_s = 0;
+  bootloader_pending_s = 0;
   last_host_command_s = 0;
   clear_queue();
   led_show_absent();
@@ -215,6 +233,11 @@ void protocol_setup(void)
 void protocol_set_button_state(uint8_t state)
 {
   current_buttons_s = state & 0x0F;
+}
+
+uint8_t protocol_bootloader_pending(void)
+{
+  return bootloader_pending_s;
 }
 
 void protocol_queue_input(uint8_t control, uint8_t kind, int8_t value,
@@ -258,6 +281,16 @@ void protocol_update(uint32_t now)
       now - last_host_command_s >= CK_HEARTBEAT_TIMEOUT_MS)
   {
     close_session();
+  }
+
+  if (bootloader_pending_s && !response_pending_s)
+  {
+    if (USB_report_completed())
+    {
+      led_show_bootloader();
+      BOOT_now();
+    }
+    return;
   }
 
   if (!response_pending_s)

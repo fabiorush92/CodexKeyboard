@@ -14,7 +14,7 @@ internal static class Program
         Assert(HidProtocol.NextSequence(0xFF) == 0x00, "Sequence wraparound failed.");
 
         Console.WriteLine(
-            "CodexKeyboard HID v1 protocol check passed: 12 vectors, 9 rejection cases, and firmware contract parity.");
+            "CodexKeyboard HID v1 protocol check passed: 13 vectors, 10 rejection cases, and firmware contract parity.");
     }
 
     private static void CheckHostVectors()
@@ -29,6 +29,8 @@ internal static class Program
                 () => HidProtocol.CreateSetRgb(0x12, new byte[] { 0x20, 0, 0, 0, 0x20, 0, 0, 0, 0x20 }, 0x20)),
             ("PING", "01 01 04 FF 00 00 00 00 00 00 00 00 00 00 00 00",
                 () => HidProtocol.CreatePing(0xFF)),
+            ("ENTER_BOOTLOADER", "01 01 05 13 43 4B 42 4F 4F 54 4C 4F 41 44 45 52",
+                () => HidProtocol.CreateEnterBootloader(0x13)),
         };
 
         foreach (var vector in vectors)
@@ -49,13 +51,13 @@ internal static class Program
             ButtonState.Button1 | ButtonState.Button3), "INPUT_EVENT decoding failed.");
 
         var info = HidProtocol.DecodeDeviceInfo(Hex(
-            "01 01 82 10 01 00 00 3F 00 04 01 03 FF 00 00 00"));
-        Assert(info == new DeviceInfo(0x10, 1, 0, 0, Capabilities.RequiredV1, 4, 1, 3, 0xFF),
+            "01 01 82 10 01 01 00 7F 00 04 01 03 FF 00 00 00"));
+        Assert(info == new DeviceInfo(0x10, 1, 1, 0, Capabilities.RequiredV1, 4, 1, 3, 0xFF),
             "DEVICE_INFO decoding failed.");
 
         var ack = HidProtocol.DecodeAck(Hex(
-            "01 01 83 11 02 00 00 00 00 00 00 00 00 00 00 00"));
-        Assert(ack == new CommandAck(0x11, MessageType.SetScene), "ACK decoding failed.");
+            "01 01 83 13 05 00 00 00 00 00 00 00 00 00 00 00"));
+        Assert(ack == new CommandAck(0x13, MessageType.EnterBootloader), "ACK decoding failed.");
 
         var errors = new (string Hex, CommandError Expected)[]
         {
@@ -88,6 +90,9 @@ internal static class Program
         Expect<FormatException>(() => HidProtocol.Decode(Mutate(getInfo, 2, 0x7F), ReportDirection.HostToDevice));
         Expect<FormatException>(() => HidProtocol.Decode(Hex(input), ReportDirection.HostToDevice));
         Expect<FormatException>(() => HidProtocol.Decode(Mutate(getInfo, 4, 0x01), ReportDirection.HostToDevice));
+        Expect<FormatException>(() => HidProtocol.Decode(
+            Mutate("01 01 05 13 43 4B 42 4F 4F 54 4C 4F 41 44 45 52", 15, 0x00),
+            ReportDirection.HostToDevice));
 
         var invalidButtonState = Hex(input);
         invalidButtonState[4] = (byte)Control.Button1;
@@ -125,6 +130,12 @@ internal static class Program
         RequireToken(protocol, $"#define CK_PING_INTERVAL_MS {HidProtocol.PingIntervalMs}");
         RequireToken(protocol, $"#define CK_HEARTBEAT_TIMEOUT_MS {HidProtocol.HeartbeatTimeoutMs}");
         RequireToken(protocol, $"#define CK_MAX_EFFECT_PERIOD_10MS {HidProtocol.MaximumEffectPeriod10Ms}");
+        RequireToken(protocol, "#define CK_FIRMWARE_VERSION_MAJOR 1");
+        RequireToken(protocol, "#define CK_FIRMWARE_VERSION_MINOR 1");
+        RequireToken(protocol, "#define CK_FIRMWARE_VERSION_PATCH 0");
+        RequireToken(protocol, $"#define CK_CAPABILITIES 0x{(ushort)Capabilities.RequiredV1:X4}");
+        RequireToken(protocol, "#define CK_BOOTLOADER_ARM_TOKEN \"CKBOOTLOADER\"");
+        RequireToken(protocol, $"#define CK_BOOTLOADER_ARM_TOKEN_LENGTH {HidProtocol.BootloaderArmTokenLength}");
 
         var enumTokens = new (string FirmwareName, byte Value)[]
         {
@@ -132,6 +143,7 @@ internal static class Program
             ("CK_MSG_SET_SCENE", (byte)MessageType.SetScene),
             ("CK_MSG_SET_RGB", (byte)MessageType.SetRgb),
             ("CK_MSG_PING", (byte)MessageType.Ping),
+            ("CK_MSG_ENTER_BOOTLOADER", (byte)MessageType.EnterBootloader),
             ("CK_MSG_INPUT_EVENT", (byte)MessageType.InputEvent),
             ("CK_MSG_DEVICE_INFO", (byte)MessageType.DeviceInfo),
             ("CK_MSG_ACK", (byte)MessageType.Ack),
@@ -172,6 +184,7 @@ internal static class Program
         RequireToken(led, "#define LED_MAX_COMPONENT 255");
         RequireToken(descriptor, ".VendorID = 0x1209");
         RequireToken(descriptor, ".ProductID = 0xC55D");
+        RequireToken(descriptor, ".ReleaseNumber = VERSION_BCD(1, 1, 0)");
         RequireToken(descriptor, "0x06, 0x00, 0xFF");
         RequireToken(descriptor, "0x85, 0x01");
         RequireToken(descriptor, "0x95, 0x0F");

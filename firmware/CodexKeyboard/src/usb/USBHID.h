@@ -13,6 +13,7 @@ extern "C" {
 void USBInit(void);
 uint8_t USB_send_report(const __xdata uint8_t *report);
 uint8_t USB_receive_report(__xdata uint8_t *report);
+uint8_t USB_report_completed(void);
 void USB_transport_reset(void);
 
 #ifdef __cplusplus

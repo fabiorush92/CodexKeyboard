@@ -4,7 +4,7 @@ Hardware controller for Codex Desktop based on the AliExpress USB mini keyboard 
 
 The project completely replaces the stock firmware and uses an almost invisible Windows companion to translate physical events into verified Codex Desktop actions and report state through the LEDs.
 
-> Last updated: July 21, 2026 — Phase: R4 firmware flashed; vendor HID, protocol, controls, encoder, and LED rendering verified; reconnect and recovery checks remain
+> Last updated: July 22, 2026 — Phase: R4 firmware and all physical exit gates completed; R5 hidden companion is ready to begin
 
 ## Goal
 
@@ -121,9 +121,30 @@ The first flash replaces the stock firmware. The upstream project documents:
 2. after the first flash, entry by holding the knob while connecting the device;
 3. during operation, entry by pressing all three keys and the knob at the same time.
 
-Both facilitated post-flash paths are preserved in the maintained R4 source. `setup()` checks the active-low encoder button before USB initialization and calls `BOOT_now()`; the debounced running input scanner calls the same routine when all three keys and the encoder button are active. `BOOT_now()` disables USB, interrupts, and timers before jumping to the internal bootloader. R2 physically verified both paths on the baseline image; the R4 image still requires the same physical regression test.
+Both facilitated post-flash paths are preserved in the maintained R4 source. `setup()` checks the active-low encoder button before USB initialization and calls `BOOT_now()`; the debounced running input scanner calls the same routine when all three keys and the encoder button are active. `BOOT_now()` disables USB, interrupts, and timers before jumping to the internal bootloader. R2 physically verified both paths on the baseline image, and both are now reconfirmed on the R4 `1.1.0` image.
 
 The bootloader `2.50` session entered through the running four-control chord remains available for only a few seconds when no uploader communicates with it, then resets automatically into the firmware. This observed behavior is consistent with an independent disassembly that identifies a Timer 0 timeout and automatic soft reset in bootloader `2.50`; no matching WCH specification has been located, so this is supporting reverse-engineering evidence rather than a vendor guarantee. In practice, start the uploader before entering through the chord or begin the upload immediately afterward.
+
+#### Remote bootloader control assessment
+
+The July 22, 2026 assessment separates application firmware from the immutable WCH ROM bootloader:
+
+- Runtime-to-bootloader control is present in the flashed `1.1.0` image. The guarded vendor-HID command reuses `BOOT_now()`: firmware validates the complete arming payload, sends its ACK, waits for an explicit completion flag set only by the interrupt-IN handler, renders the transition indicator, and only then disables USB and jumps. A USB transport reset clears rather than sets that completion flag, and the physical chord cannot preempt an already armed remote transition. The R3 contract, executable vector, and firmware parity check cover this ordering.
+- Bootloader-to-runtime control cannot use CodexKeyboard HID because `1209:C55D` disappears after the jump. The open-source [`wchisp` implementation](https://github.com/ch32-rs/wchisp/blob/main/src/flashing.rs) ends the ISP session with `IspEnd(1)` and validates its response; its [wire encoder](https://github.com/ch32-rs/wchisp/blob/main/src/protocol.rs) emits the four-byte ISP-end request. [`ch55xtool`](https://github.com/MarsTechHAN/ch552tool/blob/master/ch55xtool/ch55xtool.py) independently exposes the same restart behavior through `--reset_at_end`. The development-only helper now uses the official WCH driver API to send that command and is not a dependency of the final driverless companion. The observed idle timeout and a USB power cycle remain independent exit paths.
+- A continuously pulsing physical LED while the CPU executes the ROM bootloader is not possible on this board. The three WS2812-compatible pixels have no animation engine: application firmware must transmit every new frame over `P3.4`, while `BOOT_now()` disables application execution before jumping to ROM. The closest truthful indication is a blue breathe animation during a short pre-jump transition, followed by an all-blue frame latched immediately before the jump. The latched solid-blue behavior while ROM owns the CPU must be physically verified because it depends on the pixels retaining their last frame and the ROM not disturbing `P3.4`.
+
+The approved minimal behavior is therefore: acknowledge a guarded `ENTER_BOOTLOADER` command, breathe blue for 1.2 seconds, latch solid blue, enter ROM, and let a separate development helper issue the WCH reset command when an immediate return is needed. Replacing the ROM bootloader or adding a second LED controller solely to preserve animation is outside the project scope.
+
+Both remote directions have now been exercised on the physical keyboard. The development tool verified the exact `1.1.0` runtime handshake, received the guarded command ACK, observed the exact CH552 ROM `2.50` descriptor, sent `ISP_END`, and verified that the same runtime identity and handshake returned. The ROM disappeared before its reply could be read, so the returning runtime handshake is the recorded exit postcondition. The user physically confirmed the all-LED blue breathe transition followed by solid blue while ROM owned the CPU.
+
+The x64 development tool is dependency-free except for the official WCH DLL used only by `exit`. It requires the exact USB parent instance `USB\VID_1209&PID_C55D\CK498AED4EBD`, HID VID/PID/release, usage, report sizes, `DEVICE_INFO`, and remote-bootloader capability before `enter`. This parent-devnode check is necessary because Windows returns `ERROR_GEN_FAILURE` when the HID string helper queries this firmware after enumeration; it preserves exact serial binding without weakening identity checks. `exit` is authorized only by a recent transition initiated from that serial, reconciles the independent PnP count with exactly one WCH-opened `4348:55E0` device and its CH552 ROM `2.50` descriptor, takes exclusive access, and then sends `A2 01 00 01`. The transition authorization remains available through non-mutating preconditions and is consumed immediately before the first write attempt, after which retry would be unsafe. The exact returning runtime identity and handshake are the postcondition even when ROM resets before returning its reply. Run:
+
+```powershell
+dotnet run --project .\tools\CodexKeyboard.BootloaderTool\CodexKeyboard.BootloaderTool.csproj -- enter
+dotnet run --project .\tools\CodexKeyboard.BootloaderTool\CodexKeyboard.BootloaderTool.csproj -- exit
+dotnet run --project .\tools\CodexKeyboard.BootloaderTool\CodexKeyboard.BootloaderTool.csproj -- status
+dotnet run --project .\tools\CodexKeyboard.BootloaderTool\CodexKeyboard.BootloaderTool.csproj -- self-test
+```
 
 Before the first flash, both the build and a proven recovery procedure must work. The original `1189:8890` VID/PID belongs to the stock firmware and will no longer describe the custom device.
 
@@ -157,7 +178,7 @@ R3 freezes this contract. All multi-byte values are little-endian, every unused 
 | Field | v1 value |
 |---|---|
 | VID / PID | `1209:C55D` — the pid.codes allocation for ch55xduino HID devices |
-| Device release | `0x0100` |
+| Device release | `0x0110` |
 | Interface | HID class, no boot subclass, no boot protocol |
 | Collection | Vendor-defined usage page `0xFF00`, usage `0x01` |
 | IN / OUT endpoints | Interrupt `0x81` / `0x01`, 16 bytes, 10 ms polling interval |
@@ -189,6 +210,7 @@ Message types use separate ranges for each direction:
 | `0x02` | Host → device | `SET_SCENE` | `ACK` |
 | `0x03` | Host → device | `SET_RGB` | `ACK` |
 | `0x04` | Host → device | `PING` | `ACK` |
+| `0x05` | Host → device | `ENTER_BOOTLOADER` | `ACK`, then USB disconnect |
 | `0x81` | Device → host | `INPUT_EVENT` | Unsolicited |
 | `0x82` | Device → host | `DEVICE_INFO` | Terminal response to `GET_INFO` |
 | `0x83` | Device → host | `ACK` | Terminal response |
@@ -196,7 +218,7 @@ Message types use separate ranges for each direction:
 
 #### Host-to-device payloads
 
-`GET_INFO` and `PING` require bytes 4–15 to be zero.
+`GET_INFO` and `PING` require bytes 4–15 to be zero. `ENTER_BOOTLOADER` requires bytes 4–15 to contain the exact ASCII arming token `CKBOOTLOADER`; any mismatch returns `INVALID_PAYLOAD` at the first mismatching byte.
 
 `SET_SCENE`:
 
@@ -257,7 +279,7 @@ The firmware assigns the event sequence before queue insertion. A dropped event 
 | 12 | Maximum allowed value for each RGB component |
 | 13–15 | Zero |
 
-Capability bits are: bit 0 buttons, bit 1 encoder, bit 2 scenes, bit 3 direct RGB, bit 4 heartbeat watchdog, and bit 5 queue-overflow reporting. All six capabilities are required by CodexKeyboard v1.
+Capability bits are: bit 0 buttons, bit 1 encoder, bit 2 scenes, bit 3 direct RGB, bit 4 heartbeat watchdog, bit 5 queue-overflow reporting, and bit 6 guarded remote bootloader entry. All seven capabilities are required by the amended CodexKeyboard v1 contract.
 
 `ACK` stores the acknowledged host message type in byte 4 and zeroes bytes 5–15.
 
@@ -269,6 +291,7 @@ Capability bits are: bit 0 buttons, bit 1 encoder, bit 2 scenes, bit 3 direct RG
 - `DEVICE_INFO`, `ACK`, and `ERROR` echo the host command sequence. The device does not implement replay storage or ordering policy; repeated idempotent commands are processed again.
 - `INPUT_EVENT` uses an independent counter that starts at zero after device reset and wraps modulo 256. The first event after a handshake establishes the host baseline; later gaps are handled as input loss.
 - A command has a 250 ms response deadline. The companion does not retry after an ambiguous timeout: it closes the handle, clears input state, reports the failure, and reconnects.
+- `ENTER_BOOTLOADER` is never retried. Firmware waits for the ACK's actual interrupt-IN completion, breathes blue for 1.2 seconds, latches solid blue, and then jumps to ROM. USB deconfiguration before ACK completion cancels the request.
 - The companion sends `PING` after one second without another valid command. Any valid host command refreshes the device watchdog. Three seconds without one activates `COMPANION_ABSENT`; invalid reports do not refresh it.
 - A structurally valid report with an unsupported version, type, direction, payload, or value receives one `ERROR`. A wrong report ID or length is dropped because its sequence cannot be trusted.
 - LED commands are last-write-wins. Input events use a bounded FIFO; USB input transmission remains independent from LED animation.
@@ -283,9 +306,10 @@ These vectors cover every message and every protocol error code. Values such as 
 | `SET_SCENE` | `01 01 02 11 04 02 20 64 00 00 00 00 00 00 00 00` |
 | `SET_RGB` | `01 01 03 12 20 00 00 00 20 00 00 00 20 00 00 00` |
 | `PING` | `01 01 04 FF 00 00 00 00 00 00 00 00 00 00 00 00` |
+| `ENTER_BOOTLOADER` | `01 01 05 13 43 4B 42 4F 4F 54 4C 4F 41 44 45 52` |
 | `INPUT_EVENT` | `01 01 81 7F 05 03 FF 00 05 00 00 00 00 00 00 00` |
-| `DEVICE_INFO` | `01 01 82 10 01 00 00 3F 00 04 01 03 FF 00 00 00` |
-| `ACK` | `01 01 83 11 02 00 00 00 00 00 00 00 00 00 00 00` |
+| `DEVICE_INFO` | `01 01 82 10 01 01 00 7F 00 04 01 03 FF 00 00 00` |
+| `ACK` | `01 01 83 13 05 00 00 00 00 00 00 00 00 00 00 00` |
 | `ERROR/UNSUPPORTED_VERSION` | `01 01 84 20 01 01 01 00 00 00 00 00 00 00 00 00` |
 | `ERROR/UNKNOWN_MESSAGE_TYPE` | `01 01 84 21 7F 02 02 00 00 00 00 00 00 00 00 00` |
 | `ERROR/WRONG_DIRECTION` | `01 01 84 22 81 03 02 00 00 00 00 00 00 00 00 00` |
@@ -304,7 +328,7 @@ The PC does not continuously stream animation frames. It sends a scene when stat
 
 | Scene | Source | Status |
 |---|---|---:|
-| Boot / bootloader | Firmware | Supported upstream |
+| Boot / bootloader | Firmware | Guarded transition and blue breathe-to-solid indication physically verified |
 | Companion absent | Heartbeat timeout | To implement |
 | Companion connected | HID handshake | To implement |
 | Codex unavailable | Window/process lookup | To implement |
@@ -383,13 +407,14 @@ The UI Automation technique has already changed the visible task effort between 
 |---|---:|---|
 | Stock `1189:8890` device analysis | Completed | Remaining useful information incorporated into this README |
 | Effort control through UI Automation | Tested on the real PC | Repeat after companion implementation |
-| Custom firmware baseline | Replaced by the flashed R4 image | Re-run the physical recovery checks |
+| Custom firmware baseline | Replaced by the completed and physically verified R4 image | R5 companion integration |
 | Upstream source review | Completed | Physical Button 1/3 pinout verified |
-| Vendor HID USB architecture | One vendor-only collection verified on Windows | Reconfirm after reconnect and recovery |
+| Vendor HID USB architecture | One vendor-only collection and handshake reconfirmed after both recovery paths | Integrate with the R5 companion |
 | Hidden companion architecture | Defined | Create the minimal `WinExe` project |
 | Baseline firmware build | Completed | Repeat with `pwsh -File .\Build-Firmware.ps1` |
-| Device flash and bench validation | R4 write/verify, inputs, and LEDs completed | Finish reconnect and recovery |
-| Firmware/host HID protocol | Commands, responses, errors, timeout, and primitive inputs verified | Exercise reconnect and recovery |
+| Device flash and bench validation | Completed, including both recovery paths on firmware `1.1.0` | R5 companion integration |
+| Firmware/host HID protocol | Amended contract passes 13 vectors, 10 rejection cases, firmware parity, and all physical R4 gates | Integrate with the R5 companion |
+| Remote bootloader control | Guarded PC entry, blue indication, explicit WCH exit, and both physical recovery paths verified | Completed |
 | RGB scenes | R4 rendering physically verified | Final state calibration remains in R7 |
 | Codex state detection | Partial | Capture UIA anchors for each state |
 | End-to-end testing | Not started | One physical event equals one verified action |
@@ -410,8 +435,8 @@ R1 Build  ───┘                                                    -> R6 
 | R1 | Reproducible firmware baseline | Codex | Completed |
 | R2 | First flash and upstream validation | Joint | Completed |
 | R3 | HID v1 contract | Codex | Completed |
-| R4 | CodexKeyboard firmware | Codex + user testing | Flashed; physical gate partially complete |
-| R5 | Hidden HID companion | Codex | Waiting for R4 |
+| R4 | CodexKeyboard firmware | Codex + user testing | Completed |
+| R5 | Hidden HID companion | Codex | Ready |
 | R6 | End-to-end Codex control | Codex + user testing | Waiting for R5 |
 | R7 | Verified LED feedback | Joint | Waiting for R6 |
 | R8 | Packaging and v1 acceptance | Joint | Waiting for R7 |
@@ -514,6 +539,8 @@ R1 Build  ───┘                                                    -> R6 
 
 **Evidence recorded on July 21, 2026:** the README defines all layouts, values, ordering, timing, identity, and failure behavior; the dependency-free .NET 8 codec encodes host commands and validates and decodes device messages; `dotnet run --project .\tests\CodexKeyboard.Protocol.Check\CodexKeyboard.Protocol.Check.csproj` passed all 12 binary vectors, all five wire error codes, nine malformed or unsafe cases, and sequence wraparound.
 
+**Amendment recorded on July 22, 2026:** v1 adds guarded `ENTER_BOOTLOADER`, capability bit 6, firmware/device release `1.1.0`, the exact 12-byte arming token, ACK-completion ordering, and cancellation on USB reset. The amended oracle passes 13 vectors, all five wire error codes, 10 malformed or unsafe cases, sequence wraparound, and direct firmware/descriptor parity. The protocol version remains `0x01`.
+
 **Result:** R3 is completed. The frozen contract and executable oracle satisfy the exit gate and unblock R4.
 
 ### R4 — CodexKeyboard firmware
@@ -523,25 +550,25 @@ R1 Build  ───┘                                                    -> R6 
 - remove macros, the configuration menu, keyboard HID, and mouse HID;
 - expose only the vendor-defined IN/OUT HID collection;
 - implement time-based debouncing, encoder calibration, and a bounded input queue;
-- implement `GET_INFO`, input events, ACK/ERROR, heartbeat, `SET_SCENE`, and `SET_RGB`;
-- make LED effects non-blocking and enforce a brightness limit;
-- preserve both bootloader entry paths.
+- implement `GET_INFO`, input events, ACK/ERROR, heartbeat, `SET_SCENE`, `SET_RGB`, and guarded `ENTER_BOOTLOADER`;
+- make LED effects non-blocking and enforce the advertised component range;
+- preserve both physical bootloader entry paths and add the guarded remote path.
 
 **Deliverable:** flashable CodexKeyboard firmware.
 
-**Exit gate:** Windows does not see it as a keyboard, the six actions arrive exactly once, RGB and ACK work, and timeout returns to the companion-absent scene.
+**Exit gate:** Windows does not see it as a keyboard, the six actions arrive exactly once, RGB and ACK work, timeout returns to the companion-absent scene, guarded PC entry reaches ROM, and explicit `ISP_END` returns the exact runtime. The blue transition and both physical recovery paths must be confirmed.
 
-**Hardware verification:** slow/fast rotations, simultaneous presses, reconnect, and recovery.
+**Hardware verification:** slow/fast rotations, simultaneous presses, reconnect, PC-controlled bootloader entry/exit, blue indication, and both physical recovery paths.
 
-**Implementation evidence recorded on July 21, 2026:** the configuration menu, automatic macros, keyboard reports, and mouse reports were removed. The firmware now exposes one 16-byte vendor HID IN/OUT collection with the frozen identity and a serial generated from the five UID bytes. It implements 8 ms button debouncing, the named three-transition encoder calibration, an eight-event FIFO with sticky overflow recovery, all four host commands and four device messages, a three-second heartbeat watchdog, and non-blocking 20 ms LED rendering over the full 8-bit component range. Both bootloader entry paths remain in the source.
+**Implementation evidence recorded on July 21, 2026, amended July 22:** the configuration menu, automatic macros, keyboard reports, and mouse reports were removed. The firmware now exposes one 16-byte vendor HID IN/OUT collection with the frozen identity and a serial generated from the five UID bytes. It implements 8 ms button debouncing, the named three-transition encoder calibration, an eight-event FIFO with sticky overflow recovery, all five host commands and four device messages, a three-second heartbeat watchdog, and non-blocking 20 ms LED rendering over the full 8-bit component range. Both physical bootloader entry paths and the guarded remote path remain in the source.
 
-`pwsh -File .\Build-Firmware.ps1` completed with the pinned CH55xDuino `0.0.20` toolchain. The current full-range image uses 10,746 / 14,336 bytes of flash (74%) and 311 / 876 bytes of global RAM (35%), and `.build/firmware/CodexKeyboard.ino.hex` has SHA-256 `218d80be5162c7a8127487547da4a330247c2da02e9f369ecce2f62c6c961eb9`. No R4 source warning remains; the toolchain still emits the four known upstream `_dummy_variable` diagnostics. The protocol check passes 12 binary vectors, nine rejection cases, sequence wraparound, overflow-state resynchronization, and direct parity checks between the host values and firmware headers/descriptor.
+`pwsh -File .\Build-Firmware.ps1` completed with the pinned CH55xDuino `0.0.20` toolchain. The earlier `1.0.0` full-range image uses 10,746 / 14,336 bytes of flash (74%) and 311 / 876 bytes of global RAM (35%), and its HEX SHA-256 is `218d80be5162c7a8127487547da4a330247c2da02e9f369ecce2f62c6c961eb9`. No R4 source warning remained; the toolchain emitted the four known upstream `_dummy_variable` diagnostics. Its protocol check passed 12 binary vectors, nine rejection cases, sequence wraparound, overflow-state resynchronization, and direct parity checks between the host values and firmware headers/descriptor.
 
 **Flash and USB evidence recorded on July 21, 2026:** the first synchronized upload attempt expired without finding the bootloader and performed no write. During the second attempt, the runtime chord exposed bootloader `2.5.0`; `vnproch55x` identified the CH552, wrote all 10,864 bytes, completed its full verify pass, and reset the device. Arduino CLI then reported that it could not discover a new upload port, but post-reset evidence confirms successful programming: Windows exposes one healthy vendor-defined HID collection and no keyboard or mouse collection. The USB device serial is `CK498AED4EBD`, matching the frozen `CK` plus ten-uppercase-hex-digit format.
 
 After physical calibration showed that the initial component ceiling of 32 was unnecessarily dim, the artificial clamp was removed and the device now advertises and accepts the complete native range `0`–`255`. The replacement image was written on the first synchronized bootloader attempt: `vnproch55x` wrote all 10,746 bytes, completed its full verify pass, and reset successfully. The post-flash `DEVICE_INFO` report was `01 01 82 20 01 00 00 3F 00 04 01 03 FF 00 00 00`, confirming maximum component value 255. A 30-second physical white test drove every component of every LED to 255; the user confirmed that the resulting brightness is appropriate.
 
-The physical HID probe received the exact `DEVICE_INFO` v1 payload for firmware `1.0.0`, capabilities `0x003F`, four buttons, one encoder, three LEDs, and maximum component value 255. `PING`, `SET_SCENE`, and `SET_RGB` returned the expected ACKs. A nonzero reserved byte returned `INVALID_PAYLOAD` with detail byte 4, protocol version 2 returned `UNSUPPORTED_VERSION` with expected version 1, and `GET_INFO` successfully reopened a session after the 3.4-second heartbeat expiry.
+On the earlier `1.0.0` image, the physical HID probe received the exact `DEVICE_INFO` v1 payload with capabilities `0x003F`, four buttons, one encoder, three LEDs, and maximum component value 255. `PING`, `SET_SCENE`, and `SET_RGB` returned the expected ACKs. A nonzero reserved byte returned `INVALID_PAYLOAD` with detail byte 4, protocol version 2 returned `UNSUPPORTED_VERSION` with expected version 1, and `GET_INFO` successfully reopened a session after the 3.4-second heartbeat expiry.
 
 During the synchronized physical input test, the user pressed and released Button 1, Button 2, Button 3, and the knob, then rotated one detent in each direction. The probe received exactly ten reports with consecutive event sequences `0` through `9`: eight matching press/release reports with the correct post-event button masks, one clockwise `+1`, and one counterclockwise `-1`. A second test used three slow and ten fast detents in each direction; it received exactly 26 reports, split into 13 clockwise and 13 counterclockwise events with consecutive sequences `0` through `25` and no gap. The named three-transition encoder calibration therefore passes both tested speeds on the physical device.
 
@@ -549,7 +576,19 @@ For simultaneous input, the user pressed and released Button 1 and Button 2 toge
 
 For LED rendering, the user confirmed distinct red, green, and blue output on LEDs 1, 2, and 3, followed by the expected two-LED orange `EFFORT_HIGH` breathe effect and automatic return to the dim companion-absent animation after heartbeat expiry. A separate `EFFORT_ULTRA` test confirmed the magenta breathe effect across all three LEDs and the same watchdog return. This completes the R4 color order, full-range brightness, multi-LED effect, non-blocking animation, and timeout checks; final semantic scene calibration remains in R7.
 
-**Result:** the R4 implementation, flash, vendor-only USB identity, protocol, controls, encoder, and LED gates are complete, but R4 is not yet completed. Its exit gate still requires reconnect and both recovery results.
+**Remote-bootloader build evidence recorded on July 22, 2026:** the amended image uses 11,095 / 14,336 bytes of flash (77%) and 315 / 876 bytes of global RAM (35%). Its HEX SHA-256 is `7573472f2c6a8b789478ace0c2d298c8a6653356480b4ce4240b0391c1e6aedc`. The x64 development tool builds with zero warnings and its self-test passes the guarded HID vector and strict ROM `2.50` ISP-end reply parser. A negative physical-PC probe found no bootloader while the runtime was connected and failed closed without sending a write; a separate `exit` without a current transition authorization also failed before opening or writing to a bootloader.
+
+**Firmware 1.1.0 flash and remote-transition evidence recorded on July 22, 2026:** before writing, the uploader reverified HEX SHA-256 `7573472f2c6a8b789478ace0c2d298c8a6653356480b4ce4240b0391c1e6aedc`, identified exactly one CH552 bootloader `2.5.0` with chip ID `8A ED 4E BD`, wrote all 11,095 bytes, completed full verification, and reported `Reset OK`. The returned runtime reported firmware `1.1.0`, capabilities `0x007F`, and serial `CK498AED4EBD`.
+
+The first development-tool `status` probe failed closed before sending a command because `HidD_GetManufacturerString` returned Windows error 31. The final tool enumerates the HID collection with a synchronous query handle, verifies its one-hop USB parent as `USB\VID_1209&PID_C55D\CK498AED4EBD`, checks the HID attributes and capabilities, then opens a separate overlapped I/O handle. This exact mapping was observed on the physical PC, the project builds with zero warnings, and `status` now passes the `1.1.0` handshake. The automated cycle reported `BOOTLOADER_READY: 4348:55E0, CH552 ROM 2.50`; the `ISP_END` write succeeded, ROM disappeared before its reply was read, and the exact `1.1.0` runtime identity and handshake returned. The same cycle passed again after hardening the independent PnP/WCH identity reconciliation, authorization timing, and short-ROM-lifetime handling. No boot command was sent during either failed-closed identity probe.
+
+**Pre-amendment reconnect evidence recorded on July 22, 2026:** after a normal USB disconnect and reconnect on firmware `1.0.0`, Windows again exposed exactly one healthy vendor-defined `1209:C55D` HID collection, with no keyboard or mouse collection. The per-chip serial remained `CK498AED4EBD`, and a newly opened handle returned the exact `DEVICE_INFO` report `01 01 82 30 01 00 00 3F 00 04 01 03 FF 00 00 00`. This passes the R4 normal-reconnect check for that image; the remote transition tests separately confirm `1.1.0` reset/re-enumeration and handshake behavior.
+
+**Knob-on-connect recovery evidence recorded on July 22, 2026:** the user disconnected USB, held the knob while reconnecting, observed the recovery path, and confirmed the automatic return to runtime. A fresh development-tool status probe then verified firmware `1.1.0`, capabilities `0x007F`, and serial `CK498AED4EBD`.
+
+**Runtime-chord recovery evidence recorded on July 22, 2026:** while firmware `1.1.0` was running, the user held Button 1, Button 2, Button 3, and the knob together, observed the recovery path, and confirmed the automatic return to runtime. A fresh development-tool status probe then verified firmware `1.1.0`, capabilities `0x007F`, and serial `CK498AED4EBD`.
+
+**Result:** R4 is completed. The flashed `1.1.0` image satisfies the vendor-only USB, protocol, controls, encoder, LED rendering, reconnect, guarded remote bootloader, blue indicator, and both physical recovery exit gates.
 
 ### R5 — Hidden HID companion
 
@@ -618,10 +657,11 @@ Every operation passes through one UI Automation queue. A changed window/task, a
 
 ### Next operation
 
-Complete the remaining R4 hardware exit gate:
+Begin R5 with the smallest hidden companion slice:
 
-- verify a normal USB reconnect;
-- repeat knob-on-connect recovery and runtime chord recovery before marking R4 complete.
+- create the per-user C# `WinExe` process with no main window;
+- reuse the proven native SetupAPI/HID enumeration and protocol codec;
+- connect, perform `GET_INFO`, maintain heartbeat, and expose bounded tray diagnostics before adding Codex actions.
 
 ## Security and limitations
 
@@ -632,7 +672,7 @@ Complete the remaining R4 hardware exit gate:
 - errors fail closed: no follow-up action and no false-success LED;
 - a Codex update may change the UIA tree and require new validation;
 - a USB device can spoof VID/PID/serial: HID identity reduces mistakes but is not strong authentication.
-- the final HID firmware and companion remain driverless; the WCH driver currently bound only to development-time bootloader `4348:55E0` is not required by the final HID runtime and can be removed after flashing work is complete.
+- the final HID firmware and companion remain driverless; the WCH driver currently bound only to development-time bootloader `4348:55E0` is not required by the final HID runtime and can be removed after bootloader development and recovery testing are complete.
 
 ## USB identity and licenses
 
@@ -647,6 +687,8 @@ The upstream repository declares the [Creative Commons Attribution-ShareAlike 3.
 - [pid.codes allocation for ch55xduino HID devices](https://pid.codes/org/ThinkCreate/)
 - [WCH CH551/CH552 datasheet](https://www.wch-ic.com/downloads/CH552DS1_PDF.html)
 - [Independent CH552 bootloader 2.50 disassembly discussion](https://www.mikrocontroller.net/attachment/638176/mc.pdf) — supporting reverse-engineering evidence for the timeout, not WCH documentation
+- [`wchisp` CH55x ISP implementation](https://github.com/ch32-rs/wchisp) — open-source supporting evidence for the ISP-end/reset operation
+- [`ch55xtool` CH55x ISP implementation](https://github.com/MarsTechHAN/ch552tool) — independent open-source supporting evidence for reset-at-end behavior
 - [Codex app server](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md)
 - [Codex commands and deep links](https://learn.chatgpt.com/docs/developer-commands)
 - [Windows HID](https://learn.microsoft.com/windows-hardware/drivers/hid/)

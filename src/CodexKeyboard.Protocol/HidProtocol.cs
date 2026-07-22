@@ -14,6 +14,7 @@ public enum MessageType : byte
     SetScene = 0x02,
     SetRgb = 0x03,
     Ping = 0x04,
+    EnterBootloader = 0x05,
     InputEvent = 0x81,
     DeviceInfo = 0x82,
     Ack = 0x83,
@@ -85,7 +86,9 @@ public enum Capabilities : ushort
     DirectRgb = 1 << 3,
     HeartbeatWatchdog = 1 << 4,
     QueueOverflowReporting = 1 << 5,
-    RequiredV1 = Buttons | Encoder | Scenes | DirectRgb | HeartbeatWatchdog | QueueOverflowReporting,
+    RemoteBootloader = 1 << 6,
+    RequiredV1 = Buttons | Encoder | Scenes | DirectRgb | HeartbeatWatchdog | QueueOverflowReporting |
+                 RemoteBootloader,
 }
 
 public enum ProtocolErrorCode : byte
@@ -135,12 +138,23 @@ public static class HidProtocol
     public const int CommandTimeoutMs = 250;
     public const int PingIntervalMs = 1000;
     public const int HeartbeatTimeoutMs = 3000;
+    public const int BootloaderArmTokenLength = 12;
+
+    private static ReadOnlySpan<byte> BootloaderArmToken => "CKBOOTLOADER"u8;
 
     public static byte NextSequence(byte sequence) => unchecked((byte)(sequence + 1));
 
     public static byte[] CreateGetInfo(byte sequence) => CreateEmptyCommand(MessageType.GetInfo, sequence);
 
     public static byte[] CreatePing(byte sequence) => CreateEmptyCommand(MessageType.Ping, sequence);
+
+    public static byte[] CreateEnterBootloader(byte sequence)
+    {
+        var report = CreateReport(MessageType.EnterBootloader, sequence);
+        BootloaderArmToken.CopyTo(report.AsSpan(4));
+        Validate(report, ReportDirection.HostToDevice);
+        return report;
+    }
 
     public static byte[] CreateSetScene(
         byte sequence,
@@ -300,6 +314,12 @@ public static class HidProtocol
             case MessageType.Ping:
                 RequireZero(report, 4);
                 break;
+            case MessageType.EnterBootloader:
+                if (!report[4..].SequenceEqual(BootloaderArmToken))
+                {
+                    throw new FormatException("Invalid bootloader arming token.");
+                }
+                break;
             case MessageType.SetScene:
                 ValidateSetScene(report);
                 break;
@@ -322,7 +342,8 @@ public static class HidProtocol
     }
 
     private static bool IsHostMessage(MessageType type) =>
-        type is MessageType.GetInfo or MessageType.SetScene or MessageType.SetRgb or MessageType.Ping;
+        type is MessageType.GetInfo or MessageType.SetScene or MessageType.SetRgb or MessageType.Ping or
+            MessageType.EnterBootloader;
 
     private static void ValidateSetScene(ReadOnlySpan<byte> report)
     {

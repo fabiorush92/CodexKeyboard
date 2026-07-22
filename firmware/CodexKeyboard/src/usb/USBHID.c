@@ -7,6 +7,7 @@
 extern __xdata __at(EP1_ADDR) uint8_t Ep1Buffer[];
 
 static volatile __xdata uint8_t usb_in_busy_s;
+static volatile __xdata uint8_t usb_in_complete_s;
 static volatile __xdata uint8_t usb_out_pending_s;
 static volatile __xdata uint8_t usb_out_length_s;
 
@@ -23,6 +24,7 @@ void USB_EP1_IN(void)
   UEP1_T_LEN = 0;
   UEP1_CTRL = (UEP1_CTRL & ~MASK_UEP_T_RES) | UEP_T_RES_NAK;
   usb_in_busy_s = 0;
+  usb_in_complete_s = 1;
 }
 
 void USB_EP1_OUT(void)
@@ -48,6 +50,7 @@ uint8_t USB_send_report(const __xdata uint8_t *report)
     }
     UEP1_T_LEN = HID_REPORT_LENGTH;
     usb_in_busy_s = 1;
+    usb_in_complete_s = 0;
     UEP1_CTRL = (UEP1_CTRL & ~MASK_UEP_T_RES) | UEP_T_RES_ACK;
     sent = 1;
   }
@@ -77,9 +80,15 @@ uint8_t USB_receive_report(__xdata uint8_t *report)
   return length;
 }
 
+uint8_t USB_report_completed(void)
+{
+  return usb_in_complete_s;
+}
+
 void USB_transport_reset(void)
 {
   usb_in_busy_s = 0;
+  usb_in_complete_s = 0;
   usb_out_pending_s = 0;
   usb_out_length_s = 0;
   UEP1_T_LEN = 0;

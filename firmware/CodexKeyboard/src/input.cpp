@@ -157,7 +157,7 @@ void input_update(uint32_t now)
                          stable_buttons_s);
   }
 
-  if (stable_buttons_s == BUTTON_MASK)
+  if (stable_buttons_s == BUTTON_MASK && !protocol_bootloader_pending())
   {
     led_show_bootloader();
     BOOT_now();

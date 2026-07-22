@@ -9,6 +9,12 @@
 #define CK_PING_INTERVAL_MS 1000
 #define CK_HEARTBEAT_TIMEOUT_MS 3000
 #define CK_MAX_EFFECT_PERIOD_10MS 6000
+#define CK_FIRMWARE_VERSION_MAJOR 1
+#define CK_FIRMWARE_VERSION_MINOR 1
+#define CK_FIRMWARE_VERSION_PATCH 0
+#define CK_CAPABILITIES 0x007F
+#define CK_BOOTLOADER_ARM_TOKEN "CKBOOTLOADER"
+#define CK_BOOTLOADER_ARM_TOKEN_LENGTH 12
 
 enum ck_message_t
 {
@@ -16,6 +22,7 @@ enum ck_message_t
   CK_MSG_SET_SCENE = 0x02,
   CK_MSG_SET_RGB = 0x03,
   CK_MSG_PING = 0x04,
+  CK_MSG_ENTER_BOOTLOADER = 0x05,
   CK_MSG_INPUT_EVENT = 0x81,
   CK_MSG_DEVICE_INFO = 0x82,
   CK_MSG_ACK = 0x83,
@@ -71,6 +78,7 @@ enum ck_error_t
 
 void protocol_setup(void);
 void protocol_update(uint32_t now);
+uint8_t protocol_bootloader_pending(void);
 void protocol_set_button_state(uint8_t state);
 void protocol_queue_input(uint8_t control, uint8_t kind, int8_t value,
                           uint8_t buttons);
