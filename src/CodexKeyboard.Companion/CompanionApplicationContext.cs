@@ -150,12 +150,15 @@ internal sealed class CompanionApplicationContext : ApplicationContext
 
         _testForm = new HardwareTestForm(_service);
         _testForm.HideRequested += OnHideTestsRequested;
+        _testForm.ExitRequested += OnExitRequested;
         _testForm.ApplyStatus(_service.Status);
         foreach (var entry in _service.Diagnostics)
         {
             _testForm.AddDiagnostic(entry);
         }
     }
+
+    private async void OnExitRequested(object? sender, EventArgs e) => await ExitAsync();
 
     private void OnStatusChanged(ServiceStatus status) => Dispatch(() =>
     {

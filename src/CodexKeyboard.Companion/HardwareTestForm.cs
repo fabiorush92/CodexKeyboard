@@ -2,11 +2,10 @@ using CodexKeyboard.Protocol;
 using System.Drawing;
 using DeviceButtonState = CodexKeyboard.Protocol.ButtonState;
 using DeviceControl = CodexKeyboard.Protocol.Control;
-using WinFormsControl = System.Windows.Forms.Control;
 
 namespace CodexKeyboard.Companion;
 
-internal sealed class HardwareTestForm : Form
+internal sealed partial class HardwareTestForm : Form
 {
     private const int MaximumDiagnosticRows = 500;
 
@@ -18,54 +17,36 @@ internal sealed class HardwareTestForm : Form
         DeviceControl.KnobButton,
     ];
 
-    private readonly KeyboardService _service;
-    private readonly Label _stateValue = ValueLabel();
-    private readonly Label _modeValue = ValueLabel();
-    private readonly Label _deviceValue = ValueLabel();
-    private readonly Label _detailValue = ValueLabel();
-    private readonly Label _operationValue = ValueLabel();
-    private readonly Label _sequenceWarning = ValueLabel();
-    private readonly Label _encoderDirection = ValueLabel();
-    private readonly ListView _diagnosticList = CreateListView();
+    private readonly KeyboardService _service = null!;
     private readonly Dictionary<DeviceControl, Label> _buttonIndicators = [];
-    private readonly ComboBox _scene = DropDown();
-    private readonly ComboBox _effect = DropDown();
-    private readonly NumericUpDown _brightness = Number(0, 255, 255, 1);
-    private readonly NumericUpDown _periodMs = Number(0, 60_000, 1_000, 10);
     private readonly Button[] _colorButtons = new Button[3];
     private readonly SemaphoreSlim _operationGate = new(1, 1);
     private byte _maximumBrightness = byte.MaxValue;
     private bool _hideRequestPending;
 
+    public HardwareTestForm()
+    {
+        InitializeComponent();
+
+        _buttonIndicators[DeviceControl.Button1] = _button1Indicator;
+        _buttonIndicators[DeviceControl.Button2] = _button2Indicator;
+        _buttonIndicators[DeviceControl.Button3] = _button3Indicator;
+        _buttonIndicators[DeviceControl.KnobButton] = _knobButtonIndicator;
+        _colorButtons[0] = _led1ColorButton;
+        _colorButtons[1] = _led2ColorButton;
+        _colorButtons[2] = _led3ColorButton;
+        UpdatePeriodState();
+    }
+
     public HardwareTestForm(KeyboardService service)
+        : this()
     {
         _service = service;
-        Text = "CodexKeyboard hardware tests";
-        StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(800, 600);
-        Size = new Size(880, 660);
-        AutoScaleMode = AutoScaleMode.Dpi;
-
-        var root = new TableLayoutPanel
-        {
-            ColumnCount = 1,
-            Dock = DockStyle.Fill,
-            Padding = new Padding(6),
-            RowCount = 3,
-        };
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-
-        root.Controls.Add(BuildStatusHeader(), 0, 0);
-        root.Controls.Add(BuildContent(), 0, 1);
-        _operationValue.Text = "Ready.";
-        _operationValue.Padding = new Padding(4);
-        root.Controls.Add(_operationValue, 0, 2);
-        Controls.Add(root);
     }
 
     public event EventHandler? HideRequested;
+
+    public event EventHandler? ExitRequested;
 
     public void ApplyStatus(ServiceStatus status)
     {
@@ -76,7 +57,6 @@ internal sealed class HardwareTestForm : Form
             ServiceConnectionState.Connecting => Color.DarkOrange,
             _ => Color.DarkRed,
         };
-        _modeValue.Text = status.Mode.ToString();
         _detailValue.Text = status.Detail;
 
         if (status.DeviceInfo is not { } info)
@@ -109,25 +89,26 @@ internal sealed class HardwareTestForm : Form
     public void AddInput(InputObservation observation)
     {
         var input = observation.Event;
-        if (observation.ShouldDispatch &&
-            input.Control == DeviceControl.Encoder &&
-            input.Kind == InputKind.Rotate)
+        var showEncoderDirection = observation.ShouldDispatch &&
+                                   input.Control == DeviceControl.Encoder &&
+                                   input.Kind == InputKind.Rotate;
+        UpdateButtonIndicators(observation.Buttons, updateKnob: !showEncoderDirection);
+        if (showEncoderDirection)
         {
             ShowEncoderDirection(input.Value);
         }
 
-        UpdateButtonIndicators(observation.Buttons);
         if (observation.SequenceGap || input.Flags.HasFlag(InputFlags.QueueOverflow))
         {
             var cause = observation.SequenceGap
                 ? $"Sequence gap at 0x{input.Sequence:X2} ({observation.MissingCount} missing report(s))"
                 : $"Queue overflow at 0x{input.Sequence:X2}";
-            _sequenceWarning.Text = observation.WaitingForSequenceGap
+            var text = observation.WaitingForSequenceGap
                 ? $"{cause}; buffered historical events are suppressed until their sequence gap arrives."
                 : observation.WaitingForRelease
                     ? $"{cause}; events are suppressed until all buttons are released."
                     : $"{cause}; this event was suppressed and state was resynchronized.";
-            _sequenceWarning.ForeColor = Color.DarkRed;
+            throw new Exception(text);
         }
     }
 
@@ -173,251 +154,53 @@ internal sealed class HardwareTestForm : Form
         }
     }
 
-    private WinFormsControl BuildStatusHeader()
+    private async void RefreshDeviceInfoButton_Click(object? sender, EventArgs e) =>
+        await RunOperationAsync("Refresh device info", () => _service.RefreshInfoAsync());
+
+    private async void PingButton_Click(object? sender, EventArgs e) =>
+        await RunOperationAsync("Ping", () => _service.PingAsync());
+
+    private void ReconnectButton_Click(object? sender, EventArgs e) => _service.Reconnect();
+
+    private void ExitApplicationButton_Click(object? sender, EventArgs e) =>
+        ExitRequested?.Invoke(this, EventArgs.Empty);
+
+    private void Effect_SelectedIndexChanged(object? sender, EventArgs e) => UpdatePeriodState();
+
+    private async void SendSceneButton_Click(object? sender, EventArgs e) =>
+        await RunOperationAsync("Send scene", SendSceneAsync);
+
+    private void Led1ColorButton_Click(object? sender, EventArgs e) => ChooseColor(0);
+
+    private void Led2ColorButton_Click(object? sender, EventArgs e) => ChooseColor(1);
+
+    private void Led3ColorButton_Click(object? sender, EventArgs e) => ChooseColor(2);
+
+    private async void SendRgbButton_Click(object? sender, EventArgs e) =>
+        await RunOperationAsync("Send RGB", SendRgbAsync);
+
+    private async void OffButton_Click(object? sender, EventArgs e)
     {
-        var group = new GroupBox
-        {
-            AutoSize = true,
-            Dock = DockStyle.Top,
-            Text = "Device status",
-        };
-        var layout = new TableLayoutPanel
-        {
-            AutoSize = true,
-            ColumnCount = 4,
-            Dock = DockStyle.Fill,
-            Padding = new Padding(4),
-            RowCount = 3,
-        };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-
-        AddField(layout, 0, "State", _stateValue);
-        AddField(layout, 0, "Mode", _modeValue, 2);
-        AddField(layout, 1, "Device", _deviceValue);
-        layout.SetColumnSpan(_deviceValue, 3);
-        AddField(layout, 2, "Detail", _detailValue);
-        layout.SetColumnSpan(_detailValue, 3);
-        group.Controls.Add(layout);
-        return group;
-    }
-
-    private WinFormsControl BuildContent()
-    {
-        var layout = new TableLayoutPanel
-        {
-            ColumnCount = 1,
-            Dock = DockStyle.Fill,
-            RowCount = 3,
-        };
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.Controls.Add(BuildInputsGroup(), 0, 0);
-        layout.Controls.Add(BuildDeviceOutputGroup(), 0, 1);
-        layout.Controls.Add(BuildDiagnosticsGroup(), 0, 2);
-        return layout;
-    }
-
-    private WinFormsControl BuildInputsGroup()
-    {
-        var group = new GroupBox { AutoSize = true, Dock = DockStyle.Top, Text = "Inputs" };
-        var layout = new TableLayoutPanel
-        {
-            AutoSize = true,
-            ColumnCount = 5,
-            Dock = DockStyle.Fill,
-            Padding = new Padding(4),
-            RowCount = 2,
-        };
-        for (var column = 0; column < 4; column++)
-        {
-            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 15));
-            var control = Buttons[column];
-            var panel = new TableLayoutPanel
-            {
-                AutoSize = true,
-                ColumnCount = 1,
-                Dock = DockStyle.Fill,
-                Margin = new Padding(2),
-            };
-            panel.Controls.Add(new Label
-            {
-                AutoSize = true,
-                Font = new Font(Font, FontStyle.Bold),
-                Text = ButtonName(control),
-            });
-            var indicator = new Label
-            {
-                AutoSize = false,
-                BackColor = Color.Gainsboro,
-                BorderStyle = BorderStyle.FixedSingle,
-                Height = 24,
-                Text = "UP",
-                TextAlign = ContentAlignment.MiddleCenter,
-                Width = 95,
-            };
-            panel.Controls.Add(indicator);
-            _buttonIndicators[control] = indicator;
-            layout.Controls.Add(panel, column, 0);
-        }
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
-
-        var encoder = new TableLayoutPanel
-        {
-            AutoSize = true,
-            ColumnCount = 1,
-            Dock = DockStyle.Fill,
-            Margin = new Padding(2),
-        };
-        encoder.Controls.Add(new Label
-        {
-            AutoSize = true,
-            Font = new Font(Font, FontStyle.Bold),
-            Text = "Encoder",
-        });
-        _encoderDirection.AutoSize = false;
-        _encoderDirection.BackColor = Color.Gainsboro;
-        _encoderDirection.BorderStyle = BorderStyle.FixedSingle;
-        _encoderDirection.Height = 24;
-        _encoderDirection.TextAlign = ContentAlignment.MiddleCenter;
-        _encoderDirection.Width = 210;
-        encoder.Controls.Add(_encoderDirection);
-        layout.Controls.Add(encoder, 4, 0);
-
-        _sequenceWarning.Text = "No sequence gaps or queue overflows observed.";
-        _sequenceWarning.Padding = new Padding(2);
-        layout.Controls.Add(_sequenceWarning, 0, 1);
-        layout.SetColumnSpan(_sequenceWarning, 5);
-        group.Controls.Add(layout);
-        return group;
-    }
-
-    private WinFormsControl BuildDeviceOutputGroup()
-    {
-        var group = new GroupBox { AutoSize = true, Dock = DockStyle.Top, Text = "Device and LED output" };
-        var layout = new TableLayoutPanel
-        {
-            AutoSize = true,
-            ColumnCount = 1,
-            Dock = DockStyle.Fill,
-            Padding = new Padding(4),
-            RowCount = 4,
-        };
-
-        var deviceCommands = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Top };
-        deviceCommands.Controls.Add(CommandButton("Refresh device info", () => _service.RefreshInfoAsync()));
-        deviceCommands.Controls.Add(CommandButton("Ping", () => _service.PingAsync()));
-        var reconnect = new Button { AutoSize = true, Text = "Reconnect" };
-        reconnect.Click += (_, _) => _service.Reconnect();
-        deviceCommands.Controls.Add(reconnect);
-        layout.Controls.Add(deviceCommands, 0, 0);
-
-        var scene = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Top, WrapContents = true };
-        _scene.Items.AddRange(Enum.GetValues<Scene>().Select(value => (object)value).ToArray());
-        _scene.SelectedItem = Scene.CompanionConnected;
-        _effect.Items.AddRange(Enum.GetValues<Effect>().Select(value => (object)value).ToArray());
-        _effect.SelectedItem = Effect.Solid;
-        _effect.SelectedIndexChanged += (_, _) => UpdatePeriodState();
-        scene.Controls.Add(FieldLabel("Scene"));
-        scene.Controls.Add(_scene);
-        scene.Controls.Add(FieldLabel("Effect"));
-        scene.Controls.Add(_effect);
-        scene.Controls.Add(FieldLabel("Brightness"));
-        scene.Controls.Add(_brightness);
-        scene.Controls.Add(FieldLabel("Period (ms)"));
-        scene.Controls.Add(_periodMs);
-        scene.Controls.Add(CommandButton("Send scene", SendSceneAsync));
-        layout.Controls.Add(scene, 0, 1);
-
-        var colors = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Top, WrapContents = true };
-        colors.Controls.Add(FieldLabel("Direct colors"));
-        for (var led = 0; led < 3; led++)
-        {
-            var selectedLed = led;
-            var button = new Button
-            {
-                AutoSize = false,
-                BackColor = Color.Black,
-                ForeColor = Color.White,
-                Height = 26,
-                Text = $"LED {led + 1} color...",
-                UseVisualStyleBackColor = false,
-                Width = 110,
-            };
-            button.Click += (_, _) => ChooseColor(selectedLed);
-            _colorButtons[led] = button;
-            colors.Controls.Add(button);
-        }
-        colors.Controls.Add(CommandButton("Send RGB", SendRgbAsync));
-        colors.Controls.Add(CommandButton("Off", async () =>
+        await RunOperationAsync("Off", async () =>
         {
             SetAllRgb(0);
             await SendRgbAsync();
-        }));
-        colors.Controls.Add(CommandButton("White", async () =>
+        });
+    }
+
+    private async void WhiteButton_Click(object? sender, EventArgs e)
+    {
+        await RunOperationAsync("White", async () =>
         {
             SetAllRgb(_maximumBrightness);
             await SendRgbAsync();
-        }));
-        layout.Controls.Add(colors, 0, 2);
-
-        var watchdog = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Top, WrapContents = true };
-        watchdog.Controls.Add(FieldLabel("Heartbeat watchdog"));
-        watchdog.Controls.Add(new Label
-        {
-            AutoSize = true,
-            Margin = new Padding(3, 8, 10, 3),
-            Text = "Pause heartbeat and verify the companion-absent fallback.",
         });
-        watchdog.Controls.Add(CommandButton("Run watchdog test", () => _service.RunWatchdogTestAsync()));
-        layout.Controls.Add(watchdog, 0, 3);
-        group.Controls.Add(layout);
-        UpdatePeriodState();
-        return group;
     }
 
-    private WinFormsControl BuildDiagnosticsGroup()
-    {
-        var group = new GroupBox { Dock = DockStyle.Fill, Text = "Diagnostics" };
-        var layout = new TableLayoutPanel
-        {
-            ColumnCount = 1,
-            Dock = DockStyle.Fill,
-            Padding = new Padding(4),
-            RowCount = 3,
-        };
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.Controls.Add(new Label
-        {
-            AutoSize = true,
-            ForeColor = Color.DarkRed,
-            MaximumSize = new Size(740, 0),
-            Padding = new Padding(2),
-            Text = "Safety: pressing all four controls enters ROM immediately. ENTER_BOOTLOADER disconnects " +
-                   "runtime HID; recovery depends on the ROM timeout or a USB power cycle.",
-        }, 0, 0);
+    private async void EnterBootloaderButton_Click(object? sender, EventArgs e) =>
+        await ConfirmAndEnterBootloaderAsync();
 
-        var commands = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Top };
-        var enterBootloader = new Button { AutoSize = true, Text = "Enter bootloader..." };
-        enterBootloader.Click += async (_, _) => await ConfirmAndEnterBootloaderAsync();
-        commands.Controls.Add(enterBootloader);
-        var clear = new Button { AutoSize = true, Text = "Clear diagnostic view" };
-        clear.Click += (_, _) => _diagnosticList.Items.Clear();
-        commands.Controls.Add(clear);
-        layout.Controls.Add(commands, 0, 1);
-
-        _diagnosticList.Columns.Add("Time", 105);
-        _diagnosticList.Columns.Add("Level", 90);
-        _diagnosticList.Columns.Add("Message", 580);
-        layout.Controls.Add(_diagnosticList, 0, 2);
-        group.Controls.Add(layout);
-        return group;
-    }
+    private void ClearDiagnosticsButton_Click(object? sender, EventArgs e) => _diagnosticList.Items.Clear();
 
     private async Task SendSceneAsync()
     {
@@ -471,13 +254,6 @@ internal sealed class HardwareTestForm : Form
         {
             await RunOperationAsync("Entering bootloader", () => _service.EnterBootloaderAsync());
         }
-    }
-
-    private Button CommandButton(string text, Func<Task> operation)
-    {
-        var button = new Button { AutoSize = true, Text = text };
-        button.Click += async (_, _) => await RunOperationAsync(text, operation);
-        return button;
     }
 
     private async Task RunOperationAsync(string name, Func<Task> operation)
@@ -556,30 +332,46 @@ internal sealed class HardwareTestForm : Form
         }
     }
 
-    private void UpdateButtonIndicators(DeviceButtonState state)
+    private void UpdateButtonIndicators(DeviceButtonState state, bool updateKnob = true)
     {
         foreach (var control in Buttons)
         {
+            if (!updateKnob && control == DeviceControl.KnobButton)
+            {
+                continue;
+            }
+
             var pressed = state.HasFlag(ButtonFlag(control));
             var indicator = _buttonIndicators[control];
-            indicator.Text = pressed ? "DOWN" : "UP";
+            var text = control == DeviceControl.KnobButton
+                ? pressed ? "PRESS: DOWN" : "PRESS: UP"
+                : pressed ? "DOWN" : "UP";
+            if (indicator.Text != text)
+            {
+                indicator.Text = text;
+            }
+
+            if (control == DeviceControl.KnobButton)
+            {
+                continue;
+            }
+
             indicator.BackColor = pressed ? Color.LightGreen : Color.Gainsboro;
         }
     }
 
     private void ShowEncoderDirection(sbyte value)
     {
-        _encoderDirection.Text = value > 0 ? "CLOCKWISE  →" : "←  COUNTERCLOCKWISE";
-        _encoderDirection.BackColor = value > 0 ? Color.LightGreen : Color.LightSkyBlue;
+        var text = value > 0 ? "CLOCKWISE  →" : "←  COUNTERCLOCKWISE";
+        if (_knobButtonIndicator.Text != text)
+        {
+            _knobButtonIndicator.Text = text;
+        }
     }
 
     private void ResetInputView()
     {
         UpdateButtonIndicators(DeviceButtonState.None);
-        _encoderDirection.Text = "Waiting for rotation";
-        _encoderDirection.BackColor = Color.Gainsboro;
-        _sequenceWarning.ForeColor = SystemColors.ControlText;
-        _sequenceWarning.Text = "No sequence gaps or queue overflows observed.";
     }
 
     private void RequestHide()
@@ -591,34 +383,6 @@ internal sealed class HardwareTestForm : Form
         _hideRequestPending = true;
         HideRequested?.Invoke(this, EventArgs.Empty);
     }
-
-    private static void AddField(
-        TableLayoutPanel layout,
-        int row,
-        string name,
-        Label value,
-        int column = 0)
-    {
-        layout.Controls.Add(new Label
-        {
-            Anchor = AnchorStyles.Left,
-            AutoSize = true,
-            Font = new Font(SystemFonts.MessageBoxFont!, FontStyle.Bold),
-            Margin = new Padding(3),
-            Text = $"{name}:",
-            TextAlign = ContentAlignment.MiddleLeft,
-        }, column, row);
-        value.Anchor = AnchorStyles.Left;
-        layout.Controls.Add(value, column + 1, row);
-    }
-
-    private static Label FieldLabel(string text) => new()
-    {
-        AutoSize = true,
-        Font = new Font(SystemFonts.MessageBoxFont!, FontStyle.Bold),
-        Margin = new Padding(3, 8, 3, 3),
-        Text = text,
-    };
 
     private static void AddBoundedRow(ListView list, ListViewItem row, int maximumRows)
     {
@@ -638,39 +402,6 @@ internal sealed class HardwareTestForm : Form
         }
     }
 
-    private static Label ValueLabel() => new()
-    {
-        AutoEllipsis = true,
-        AutoSize = true,
-        Anchor = AnchorStyles.Left,
-        Margin = new Padding(3),
-        TextAlign = ContentAlignment.MiddleLeft,
-    };
-
-    private static ComboBox DropDown() => new()
-    {
-        DropDownStyle = ComboBoxStyle.DropDownList,
-        Width = 155,
-    };
-
-    private static NumericUpDown Number(decimal minimum, decimal maximum, decimal value, decimal increment) => new()
-    {
-        Increment = increment,
-        Maximum = maximum,
-        Minimum = minimum,
-        Value = value,
-        Width = 90,
-    };
-
-    private static ListView CreateListView() => new()
-    {
-        Dock = DockStyle.Fill,
-        FullRowSelect = true,
-        GridLines = true,
-        HideSelection = false,
-        View = View.Details,
-    };
-
     private static DeviceButtonState ButtonFlag(DeviceControl control) => control switch
     {
         DeviceControl.Button1 => DeviceButtonState.Button1,
@@ -680,12 +411,4 @@ internal sealed class HardwareTestForm : Form
         _ => DeviceButtonState.None,
     };
 
-    private static string ButtonName(DeviceControl control) => control switch
-    {
-        DeviceControl.Button1 => "Button 1",
-        DeviceControl.Button2 => "Button 2",
-        DeviceControl.Button3 => "Button 3",
-        DeviceControl.KnobButton => "Knob press",
-        _ => control.ToString(),
-    };
 }
