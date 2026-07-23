@@ -79,6 +79,7 @@ partial class HardwareTestForm
             _safetyWarning = new Label();
             _diagnosticCommands = new FlowLayoutPanel();
             _enterBootloaderButton = new Button();
+            _watchdogTestButton = new Button();
             _clearDiagnosticsButton = new Button();
             _diagnosticList = new ListView();
             _timeColumn = new ColumnHeader();
@@ -823,6 +824,7 @@ partial class HardwareTestForm
             // 
             _diagnosticCommands.AutoSize = true;
             _diagnosticCommands.Controls.Add(_enterBootloaderButton);
+            _diagnosticCommands.Controls.Add(_watchdogTestButton);
             _diagnosticCommands.Controls.Add(_clearDiagnosticsButton);
             _diagnosticCommands.Dock = DockStyle.Top;
             _diagnosticCommands.Location = new Point(7, 56);
@@ -839,14 +841,24 @@ partial class HardwareTestForm
             _enterBootloaderButton.TabIndex = 0;
             _enterBootloaderButton.Text = "Enter bootloader...";
             _enterBootloaderButton.Click += EnterBootloaderButton_Click;
+            //
+            // _watchdogTestButton
+            //
+            _watchdogTestButton.AutoSize = true;
+            _watchdogTestButton.Location = new Point(123, 3);
+            _watchdogTestButton.Name = "_watchdogTestButton";
+            _watchdogTestButton.Size = new Size(119, 25);
+            _watchdogTestButton.TabIndex = 1;
+            _watchdogTestButton.Text = "Run watchdog test";
+            _watchdogTestButton.Click += WatchdogTestButton_Click;
             // 
             // _clearDiagnosticsButton
             // 
             _clearDiagnosticsButton.AutoSize = true;
-            _clearDiagnosticsButton.Location = new Point(123, 3);
+            _clearDiagnosticsButton.Location = new Point(248, 3);
             _clearDiagnosticsButton.Name = "_clearDiagnosticsButton";
             _clearDiagnosticsButton.Size = new Size(129, 25);
-            _clearDiagnosticsButton.TabIndex = 1;
+            _clearDiagnosticsButton.TabIndex = 2;
             _clearDiagnosticsButton.Text = "Clear diagnostic view";
             _clearDiagnosticsButton.Click += ClearDiagnosticsButton_Click;
             // 
@@ -990,6 +1002,7 @@ partial class HardwareTestForm
     private Label _safetyWarning;
     private FlowLayoutPanel _diagnosticCommands;
     private Button _enterBootloaderButton;
+    private Button _watchdogTestButton;
     private Button _clearDiagnosticsButton;
     private ListView _diagnosticList;
     private ColumnHeader _timeColumn;

@@ -97,19 +97,6 @@ internal sealed partial class HardwareTestForm : Form
         {
             ShowEncoderDirection(input.Value);
         }
-
-        if (observation.SequenceGap || input.Flags.HasFlag(InputFlags.QueueOverflow))
-        {
-            var cause = observation.SequenceGap
-                ? $"Sequence gap at 0x{input.Sequence:X2} ({observation.MissingCount} missing report(s))"
-                : $"Queue overflow at 0x{input.Sequence:X2}";
-            var text = observation.WaitingForSequenceGap
-                ? $"{cause}; buffered historical events are suppressed until their sequence gap arrives."
-                : observation.WaitingForRelease
-                    ? $"{cause}; events are suppressed until all buttons are released."
-                    : $"{cause}; this event was suppressed and state was resynchronized.";
-            throw new Exception(text);
-        }
     }
 
     public void AddDiagnostic(DiagnosticEntry entry)
@@ -199,6 +186,9 @@ internal sealed partial class HardwareTestForm : Form
 
     private async void EnterBootloaderButton_Click(object? sender, EventArgs e) =>
         await ConfirmAndEnterBootloaderAsync();
+
+    private async void WatchdogTestButton_Click(object? sender, EventArgs e) =>
+        await RunOperationAsync("Watchdog test", () => _service.RunWatchdogTestAsync());
 
     private void ClearDiagnosticsButton_Click(object? sender, EventArgs e) => _diagnosticList.Items.Clear();
 

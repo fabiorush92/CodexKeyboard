@@ -55,6 +55,7 @@ static void clear_queue(void)
 
 static void close_session(void)
 {
+  USB_cancel_pending_in();
   session_active_s = 0;
   response_pending_s = 0;
   bootloader_pending_s = 0;
@@ -268,6 +269,11 @@ void protocol_queue_input(uint8_t control, uint8_t kind, int8_t value,
 
 void protocol_update(uint32_t now)
 {
+  if (USB_take_transport_reset())
+  {
+    close_session();
+  }
+
   if (!UsbConfig)
   {
     if (session_active_s || response_pending_s || queue_count_s)
@@ -285,7 +291,7 @@ void protocol_update(uint32_t now)
 
   if (bootloader_pending_s && !response_pending_s)
   {
-    if (USB_report_completed())
+    if (USB_claim_report_completion())
     {
       led_show_bootloader();
       BOOT_now();

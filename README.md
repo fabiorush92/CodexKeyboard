@@ -4,7 +4,7 @@ Hardware controller for Codex Desktop based on the AliExpress USB mini keyboard 
 
 The project completely replaces the stock firmware and uses an almost invisible Windows companion to translate physical events into verified Codex Desktop actions and report state through the LEDs.
 
-> Last updated: July 22, 2026 — Phase: R5 completed; R6 end-to-end Codex control is next
+> Last updated: July 23, 2026 — Phase: R5 completed; pre-R6 source hardening is built and awaits focused firmware validation
 
 ## Goal
 
@@ -386,6 +386,7 @@ Build and run the test window from the repository root:
 ```powershell
 dotnet build .\src\CodexKeyboard.Companion\CodexKeyboard.Companion.csproj
 dotnet run --project .\src\CodexKeyboard.Companion\CodexKeyboard.Companion.csproj
+dotnet run --project .\tests\CodexKeyboard.Companion.Check\CodexKeyboard.Companion.Check.csproj
 ```
 
 Use `-- --tray` for the future autostart form with no initial test window. The current project targets x64 .NET 8 on Windows and uses only the framework plus native SetupAPI/HID calls.
@@ -436,13 +437,13 @@ The UI Automation technique has already changed the visible task effort between 
 |---|---:|---|
 | Stock `1189:8890` device analysis | Completed | Remaining useful information incorporated into this README |
 | Effort control through UI Automation | Tested on the real PC | Repeat after companion implementation |
-| Custom firmware baseline | Replaced by the completed and physically verified R4 image | Completed |
+| Custom firmware baseline | R4 remains physically verified; the pre-R6 USB-reset hardening candidate is built but not flashed | Focused candidate validation |
 | Upstream source review | Completed | Physical Button 1/3 pinout verified |
 | Vendor HID USB architecture | Integrated with the shared R5 transport; handshake and reconnect acceptance passed | Completed |
-| Hidden companion architecture | Completed as one tray/test-mode `WinExe` and one HID owner | Begin R6 Codex control |
+| Hidden companion architecture | Completed as one tray/test-mode `WinExe` and one HID owner; pre-R6 lifecycle hardening passes its source check | Validate the firmware candidate, then begin R6 |
 | Baseline firmware build | Completed | Repeat with `pwsh -File .\Build-Firmware.ps1` |
-| Device flash and bench validation | Completed, including both recovery paths and integrated companion tests on firmware `1.1.0` | Completed |
-| Firmware/host HID protocol | Contract and integrated R5 physical acceptance passed | Begin R6 Codex control |
+| Device flash and bench validation | The July 22 `1.1.0` image remains accepted; the pre-R6 hardening candidate has not been flashed | Focused candidate validation |
+| Firmware/host HID protocol | Contract and integrated R5 physical acceptance passed; source-level reset hardening passes the oracle | Validate the candidate, then begin R6 |
 | Remote bootloader control | Guarded PC entry, blue indication, explicit WCH exit, and both physical recovery paths verified | Completed |
 | RGB scenes | R4 rendering physically verified | Final state calibration remains in R7 |
 | Codex state detection | Partial | Capture UIA anchors for each state |
@@ -617,6 +618,10 @@ The first development-tool `status` probe failed closed before sending a command
 
 **Runtime-chord recovery evidence recorded on July 22, 2026:** while firmware `1.1.0` was running, the user held Button 1, Button 2, Button 3, and the knob together, observed the recovery path, and confirmed the automatic return to runtime. A fresh development-tool status probe then verified firmware `1.1.0`, capabilities `0x007F`, and serial `CK498AED4EBD`.
 
+**Pre-R6 source hardening recorded on July 23, 2026:** the firmware now validates the complete request shape for `SET_CONFIGURATION`, endpoint halt/clear-halt, and `GET_STATUS`, rejects configurations other than `0` and `1`, and keeps endpoint 1 NAKed while unconfigured. Every valid configuration change reinitializes endpoint 1 and propagates a transport reset into the protocol loop, so a host-side deconfigure/reconfigure cannot retain an earlier session, pending response, cue, or bootloader authorization. IN and OUT transport remain blocked until the protocol loop consumes the reset, closing the interrupt-ordering window that could otherwise expose a stale report across reconfiguration. Endpoint 1 halt state is tracked per direction and applied from one response-state owner, so neither the protocol loop nor an endpoint interrupt can overwrite a required STALL or strand the other direction. Heartbeat session closure cancels an armed stale IN report, and the completed bootloader ACK is claimed atomically against pending reset/halt interrupts before the blue transition begins. The protocol oracle covers these source invariants and still passes.
+
+The resulting unflashed `1.1.0` candidate uses 11,369 / 14,336 bytes of flash (79%) and 321 / 876 bytes of global RAM (36%). Its HEX SHA-256 is `1afb1a6872dfa3bfb4d61f9beb29a84bac7349ccb756595386f597a26743d2b8`. The wire contract, capability bits, and reported firmware version are unchanged. The keyboard still runs the physically accepted July 22 image with SHA-256 `7573472f2c6a8b789478ace0c2d298c8a6653356480b4ce4240b0391c1e6aedc`; the new candidate is not hardware evidence until it is flashed and the handshake, USB reconnect, heartbeat-watchdog recovery, guarded bootloader transition, and physical recovery paths are rechecked.
+
 **Result:** R4 is completed. The flashed `1.1.0` image satisfies the vendor-only USB, protocol, controls, encoder, LED rendering, reconnect, guarded remote bootloader, blue indicator, and both physical recovery exit gates.
 
 ### R5 — Hidden HID companion
@@ -640,6 +645,8 @@ The first physical shared-transport probe exposed that one `FileStream` with a p
 
 `dotnet run --project .\tests\CodexKeyboard.Device.Check\CodexKeyboard.Device.Check.csproj` passes report routing with an input event interleaved before an ACK, rejection of a mismatched terminal response, expected bootloader disconnect handling, transition-authorization timing, sequence wraparound, gap recovery, button-release recovery, and stale FIFO draining after queue overflow. The development tool self-test also covers authorization-marker validation and single consumption without touching the production marker. The original protocol oracle still passes all 13 vectors, 10 rejection cases, and firmware parity. The complete companion builds with zero warnings.
 
+**Pre-R6 robustness hardening recorded on July 23, 2026:** sequence gaps and queue-overflow recovery remain bounded diagnostics and resynchronization events instead of escaping a WinForms callback as exceptions. The watchdog-recovery test is again directly available from the hardware-test window. A terminal WinForms exception boundary, guarded UI dispatch, and monotonic shutdown now stop the service before disposing each UI resource independently; shutdown never re-enables a partially disposed process or lets a duplicate fatal callback bypass the active teardown. Device teardown drains active commands and attempts every router, channel, cancellation, stream, ownership, and synchronization cleanup even if an earlier cleanup step fails, while preserving combined operation and cleanup failures. Ordinary observed HID-session faults do not escape teardown or stop automatic reconnect; an actual cleanup failure is propagated and stops reconnect fail-closed. Faulted pending-response tasks are observed at the router boundary and remain awaitable with their original error. `CodexKeyboard.Companion.Check` exercises non-throwing input recovery, watchdog-test exposure, and idempotent service shutdown; `CodexKeyboard.Device.Check` additionally proves pending-failure behavior, cleanup continuation, and error preservation.
+
 **Physical acceptance recorded on July 22, 2026:** the user confirmed the complete R5 matrix: all four press/release inputs, both encoder directions, device commands, scenes, independent RGB and full brightness, watchdog fallback and recovery, default and tray startup, close/minimize/reopen lifecycle, diagnostic persistence, start order, single-instance behavior, unplug/replug without duplicate input, tray exit, guarded bootloader entry, and recovery.
 
 **Result:** R5 is completed. The hidden companion owns one verified HID session, exposes the integrated test UI only on demand, and recovers safely across process, USB, watchdog, and bootloader lifecycle transitions.
@@ -656,6 +663,8 @@ Actions are added one at a time in this order:
 6. interrupt a turn with protected Button 3 input and a verified postcondition.
 
 Every operation passes through one UI Automation queue. A changed window/task, ambiguous selector, or failed postcondition produces an error without further actions.
+
+A button gesture becomes eligible only after a coherent press-to-release sequence. Disconnect, sequence-gap recovery, queue overflow, or a changed Codex target cancels any partially recognized gesture; no action may be inferred from the resynchronized button mask alone. Timing-sensitive double-press and long-press protection must use monotonic time and remain inside the same serialized operation owner.
 
 **Deliverable:** complete v1 mapping.
 
@@ -696,7 +705,7 @@ Every operation passes through one UI Automation queue. A changed window/task, a
 
 ### Next operation
 
-Begin R6 with one operation at a time: first locate, restore, and activate exactly one unambiguous Codex Desktop window through Win32 and UI Automation, then verify the visible postcondition before adding the next physical mapping.
+Flash the pre-R6 firmware candidate and repeat the focused handshake, USB reconnect, heartbeat-watchdog recovery, guarded bootloader transition, and physical recovery checks. If they pass, begin R6 with one operation at a time: first locate, restore, and activate exactly one unambiguous Codex Desktop window through Win32 and UI Automation, then verify the visible postcondition before adding the next physical mapping.
 
 ## Security and limitations
 
@@ -705,6 +714,8 @@ Begin R6 with one operation at a time: first locate, restore, and activate exact
 - the companion opens only the expected CodexKeyboard HID collection;
 - no approval, prompt, or destructive command is automated in v1;
 - errors fail closed: no follow-up action and no false-success LED;
+- unexpected managed UI or teardown failures enter a terminal shutdown path; the firmware heartbeat then returns the LEDs to the companion-absent scene;
+- the firmware heartbeat watchdog detects companion loss but is not an MCU watchdog: a hard firmware hang can still require a USB power cycle;
 - a Codex update may change the UIA tree and require new validation;
 - a USB device can spoof VID/PID/serial: HID identity reduces mistakes but is not strong authentication.
 - the companion and development bootloader tool use a local-session named ownership semaphore and fail closed if another process already owns the exact runtime; the development transition verifier additionally uses its own semaphore and ten-second marker so normal reconnect cannot steal the returning-runtime handshake. These controls prevent accidental response theft but are not a security boundary against another process in the same session.

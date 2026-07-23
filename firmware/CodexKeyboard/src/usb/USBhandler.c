@@ -3,8 +3,7 @@
 #include "USBhandler.h"
 
 #include "USBconstant.h"
-
-void USB_transport_reset(void);
+#include "USBHID.h"
 
 // clang-format off
 __xdata __at (EP0_ADDR) uint8_t Ep0Buffer[8];
@@ -197,147 +196,75 @@ void USB_EP0_SETUP() {
         }
         break;
       case USB_SET_CONFIGURATION:
+        if (UsbSetupBuf->bRequestType != 0x00 || UsbSetupBuf->wValueH ||
+            UsbSetupBuf->wValueL > 1 || UsbSetupBuf->wIndexH ||
+            UsbSetupBuf->wIndexL || SetupLen) {
+          len = 0xFF;
+          break;
+        }
         UsbConfig = UsbSetupBuf->wValueL;
+        USB_transport_reset();
         break;
       case USB_GET_INTERFACE:
         break;
       case USB_SET_INTERFACE:
         break;
       case USB_CLEAR_FEATURE: // Clear Feature
-        if ((UsbSetupBuf->bRequestType & 0x1F) ==
-            USB_REQ_RECIP_DEVICE) // Clear the device featuee.
-        {
-          if ((((uint16_t)UsbSetupBuf->wValueH << 8) | UsbSetupBuf->wValueL) ==
-              0x01) {
-            if (ConfigurationDescriptor.Config.ConfigAttributes & 0x20) {
-              // wake up
-            } else {
-              len = 0xFF; // Failed
-            }
-          } else {
-            len = 0xFF; // Failed
-          }
-        } else if ((UsbSetupBuf->bRequestType & USB_REQ_RECIP_MASK) ==
-                   USB_REQ_RECIP_ENDP) // endpoint
-        {
-          switch (UsbSetupBuf->wIndexL) {
-          case 0x84:
-            UEP4_CTRL =
-                UEP4_CTRL & ~(bUEP_T_TOG | MASK_UEP_T_RES) | UEP_T_RES_NAK;
-            break;
-          case 0x04:
-            UEP4_CTRL =
-                UEP4_CTRL & ~(bUEP_R_TOG | MASK_UEP_R_RES) | UEP_R_RES_ACK;
-            break;
-          case 0x83:
-            UEP3_CTRL =
-                UEP3_CTRL & ~(bUEP_T_TOG | MASK_UEP_T_RES) | UEP_T_RES_NAK;
-            break;
-          case 0x03:
-            UEP3_CTRL =
-                UEP3_CTRL & ~(bUEP_R_TOG | MASK_UEP_R_RES) | UEP_R_RES_ACK;
-            break;
-          case 0x82:
-            UEP2_CTRL =
-                UEP2_CTRL & ~(bUEP_T_TOG | MASK_UEP_T_RES) | UEP_T_RES_NAK;
-            break;
-          case 0x02:
-            UEP2_CTRL =
-                UEP2_CTRL & ~(bUEP_R_TOG | MASK_UEP_R_RES) | UEP_R_RES_ACK;
-            break;
-          case 0x81:
-            UEP1_CTRL =
-                UEP1_CTRL & ~(bUEP_T_TOG | MASK_UEP_T_RES) | UEP_T_RES_NAK;
-            break;
-          case 0x01:
-            UEP1_CTRL =
-                UEP1_CTRL & ~(bUEP_R_TOG | MASK_UEP_R_RES) | UEP_R_RES_ACK;
-            break;
-          default:
-            len = 0xFF; // Unsupported endpoint
-            break;
-          }
-        } else {
-          len = 0xFF; // Unsupported for non-endpoint
+        if (UsbSetupBuf->bRequestType != 0x02 || UsbSetupBuf->wValueH ||
+            UsbSetupBuf->wValueL || UsbSetupBuf->wIndexH || SetupLen ||
+            UsbConfig != 1 ||
+            (UsbSetupBuf->wIndexL != 0x81 && UsbSetupBuf->wIndexL != 0x01)) {
+          len = 0xFF;
+          break;
         }
+        USB_clear_endpoint_halt(UsbSetupBuf->wIndexL);
         break;
       case USB_SET_FEATURE: // Set Feature
-        if ((UsbSetupBuf->bRequestType & 0x1F) ==
-            USB_REQ_RECIP_DEVICE) // Set  the device featuee.
-        {
-          if ((((uint16_t)UsbSetupBuf->wValueH << 8) | UsbSetupBuf->wValueL) ==
-              0x01) {
-            if (ConfigurationDescriptor.Config.ConfigAttributes & 0x20) {
-              // suspend
-
-              // while ( XBUS_AUX & bUART0_TX );    //Wait till uart0 sending
-              // complete SAFE_MOD = 0x55; SAFE_MOD = 0xAA; WAKE_CTRL =
-              // bWAK_BY_USB | bWAK_RXD0_LO | bWAK_RXD1_LO; //wake up by USB or
-              // RXD0/1 signal PCON |= PD; //sleep SAFE_MOD = 0x55; SAFE_MOD =
-              // 0xAA; WAKE_CTRL = 0x00;
-            } else {
-              len = 0xFF; // Failed
-            }
-          } else {
-            len = 0xFF; // Failed
-          }
-        } else if ((UsbSetupBuf->bRequestType & 0x1F) ==
-                   USB_REQ_RECIP_ENDP) // endpoint
-        {
-          if ((((uint16_t)UsbSetupBuf->wValueH << 8) | UsbSetupBuf->wValueL) ==
-              0x00) {
-            switch (((uint16_t)UsbSetupBuf->wIndexH << 8) |
-                    UsbSetupBuf->wIndexL) {
-            case 0x84:
-              UEP4_CTRL = UEP4_CTRL & (~bUEP_T_TOG) |
-                          UEP_T_RES_STALL; // Set endpoint4 IN STALL
-              break;
-            case 0x04:
-              UEP4_CTRL = UEP4_CTRL & (~bUEP_R_TOG) |
-                          UEP_R_RES_STALL; // Set endpoint4 OUT Stall
-              break;
-            case 0x83:
-              UEP3_CTRL = UEP3_CTRL & (~bUEP_T_TOG) |
-                          UEP_T_RES_STALL; // Set endpoint3 IN STALL
-              break;
-            case 0x03:
-              UEP3_CTRL = UEP3_CTRL & (~bUEP_R_TOG) |
-                          UEP_R_RES_STALL; // Set endpoint3 OUT Stall
-              break;
-            case 0x82:
-              UEP2_CTRL = UEP2_CTRL & (~bUEP_T_TOG) |
-                          UEP_T_RES_STALL; // Set endpoint2 IN STALL
-              break;
-            case 0x02:
-              UEP2_CTRL = UEP2_CTRL & (~bUEP_R_TOG) |
-                          UEP_R_RES_STALL; // Set endpoint2 OUT Stall
-              break;
-            case 0x81:
-              UEP1_CTRL = UEP1_CTRL & (~bUEP_T_TOG) |
-                          UEP_T_RES_STALL; // Set endpoint1 IN STALL
-              break;
-            case 0x01:
-              UEP1_CTRL = UEP1_CTRL & (~bUEP_R_TOG) |
-                          UEP_R_RES_STALL; // Set endpoint1 OUT Stall
-            default:
-              len = 0xFF; // Failed
-              break;
-            }
-          } else {
-            len = 0xFF; // Failed
-          }
-        } else {
-          len = 0xFF; // Failed
+        if (UsbSetupBuf->bRequestType != 0x02 || UsbSetupBuf->wValueH ||
+            UsbSetupBuf->wValueL || UsbSetupBuf->wIndexH || SetupLen ||
+            UsbConfig != 1 ||
+            (UsbSetupBuf->wIndexL != 0x81 && UsbSetupBuf->wIndexL != 0x01)) {
+          len = 0xFF;
+          break;
         }
+        USB_set_endpoint_halt(UsbSetupBuf->wIndexL);
         break;
       case USB_GET_STATUS:
+        if (UsbSetupBuf->wValueH || UsbSetupBuf->wValueL || SetupLen != 2) {
+          len = 0xFF;
+          break;
+        }
         Ep0Buffer[0] = 0x00;
         Ep0Buffer[1] = 0x00;
-        if (SetupLen >= 2) {
-          len = 2;
+        if (UsbSetupBuf->bRequestType == 0x80) {
+          if (UsbSetupBuf->wIndexH || UsbSetupBuf->wIndexL) {
+            len = 0xFF;
+            break;
+          }
+        } else if (UsbSetupBuf->bRequestType == 0x81) {
+          if (UsbConfig != 1 || UsbSetupBuf->wIndexH ||
+              UsbSetupBuf->wIndexL) {
+            len = 0xFF;
+            break;
+          }
+        } else if (UsbSetupBuf->bRequestType == 0x82) {
+          uint16_t endpoint = ((uint16_t)UsbSetupBuf->wIndexH << 8) |
+                              UsbSetupBuf->wIndexL;
+          if (endpoint == 0x81 || endpoint == 0x01) {
+            if (UsbConfig != 1) {
+              len = 0xFF;
+              break;
+            }
+            Ep0Buffer[0] = USB_endpoint_halted((uint8_t)endpoint);
+          } else if (endpoint != 0x80 && endpoint != 0x00) {
+            len = 0xFF;
+            break;
+          }
         } else {
-          len = SetupLen;
+          len = 0xFF;
+          break;
         }
+        len = 2;
         break;
       default:
         len = 0xff; // Failed
@@ -506,7 +433,7 @@ void USBInterrupt(void) { // inline not really working in multiple files in SDCC
   // Device mode USB bus reset
   if (UIF_BUS_RST) {
     UEP0_CTRL = UEP_R_RES_ACK | UEP_T_RES_NAK;
-    UEP1_CTRL = bUEP_AUTO_TOG | UEP_T_RES_NAK | UEP_R_RES_ACK;
+    UEP1_CTRL = bUEP_AUTO_TOG | UEP_T_RES_NAK | UEP_R_RES_NAK;
 
     USB_DEV_AD = 0x00;
     UIF_SUSPEND = 0;
@@ -581,8 +508,7 @@ void USBDeviceEndPointCfg() {
 #endif
 
   UEP1_CTRL = bUEP_AUTO_TOG | UEP_T_RES_NAK |
-              UEP_R_RES_ACK; // Endpoint 2 automatically flips the sync flag, IN
-                             // transaction returns NAK, OUT returns ACK
+              UEP_R_RES_NAK; // Endpoint 1 stays inactive until configured.
   UEP4_1_MOD = 0XC0;         // endpoint1 TX RX enable
   UEP0_CTRL =
       UEP_R_RES_ACK | UEP_T_RES_NAK; // Manual flip, OUT transaction returns

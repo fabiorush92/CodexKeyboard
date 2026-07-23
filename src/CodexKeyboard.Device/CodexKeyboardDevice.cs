@@ -29,13 +29,17 @@ public sealed class CodexKeyboardDevice : IAsyncDisposable
             AllowSynchronousContinuations = false,
         });
     private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _commandsDrained =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource _disposeCompletion =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly DeviceReportRouter _router;
     private readonly Task _readTask;
+    private Exception? _cleanupError;
     private byte _nextCommandSequence;
     private int _bootloaderRequest;
     private int _bootloaderTransition;
+    private int _commandUsers;
     private int _stopped;
     private int _disposeStarted;
 
@@ -231,6 +235,7 @@ public sealed class CodexKeyboardDevice : IAsyncDisposable
             return;
         }
 
+        Exception? disposeError = null;
         try
         {
             Stop(null);
@@ -238,18 +243,50 @@ public sealed class CodexKeyboardDevice : IAsyncDisposable
             {
                 await _readTask.ConfigureAwait(false);
             }
+            catch (Exception exception)
+            {
+                disposeError = CombineErrors(disposeError, exception);
+            }
+            try
+            {
+                await _commandsDrained.Task.ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                disposeError = CombineErrors(disposeError, exception);
+            }
+            try
+            {
+                await _completion.Task.ConfigureAwait(false);
+            }
             catch
             {
             }
-            if (_completion.Task.IsFaulted)
+            if (_cleanupError is not null)
             {
-                _ = _completion.Task.Exception;
+                disposeError = CombineErrors(disposeError, _cleanupError);
             }
+        }
+        catch (Exception exception)
+        {
+            disposeError = CombineErrors(disposeError, exception);
         }
         finally
         {
-            _disposeCompletion.TrySetResult();
+            disposeError = RunCleanupActions(
+                disposeError,
+                _lifetime.Dispose,
+                _commandGate.Dispose);
+            if (disposeError is null)
+            {
+                _disposeCompletion.TrySetResult();
+            }
+            else
+            {
+                _disposeCompletion.TrySetException(disposeError);
+            }
         }
+        await _disposeCompletion.Task.ConfigureAwait(false);
     }
 
     private async Task<DeviceInfo> GetInfoCoreAsync(CancellationToken cancellationToken)
@@ -301,11 +338,15 @@ public sealed class CodexKeyboardDevice : IAsyncDisposable
         bool allowBootloaderTransition,
         CancellationToken cancellationToken)
     {
-        ThrowIfUnavailable(allowBootloaderTransition);
-        await _commandGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        Interlocked.Increment(ref _commandUsers);
+        var gateEntered = false;
         PendingCommand? pending = null;
+        Exception? operationError = null;
         try
         {
+            ThrowIfUnavailable(allowBootloaderTransition);
+            await _commandGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            gateEntered = true;
             ThrowIfUnavailable(allowBootloaderTransition);
             if (allowBootloaderTransition)
             {
@@ -367,13 +408,51 @@ public sealed class CodexKeyboardDevice : IAsyncDisposable
                 throw;
             }
         }
+        catch (Exception exception)
+        {
+            operationError = exception;
+            throw;
+        }
         finally
         {
-            if (pending is not null)
+            Exception? cleanupError = null;
+            try
             {
-                _router.Cancel(pending, new ObjectDisposedException(nameof(CodexKeyboardDevice)));
+                cleanupError = RunCleanupActions(
+                    null,
+                    () =>
+                    {
+                        if (pending is not null)
+                        {
+                            _router.Cancel(
+                                pending,
+                                new ObjectDisposedException(nameof(CodexKeyboardDevice)));
+                        }
+                    },
+                    () =>
+                    {
+                        if (gateEntered)
+                        {
+                            _commandGate.Release();
+                        }
+                    });
+                if (cleanupError is not null)
+                {
+                    var combinedError = operationError is null
+                        ? cleanupError
+                        : new AggregateException(operationError, cleanupError);
+                    Stop(combinedError);
+                    throw combinedError;
+                }
             }
-            _commandGate.Release();
+            finally
+            {
+                if (Interlocked.Decrement(ref _commandUsers) == 0 &&
+                    Volatile.Read(ref _stopped) != 0)
+                {
+                    _commandsDrained.TrySetResult();
+                }
+            }
         }
     }
 
@@ -440,12 +519,24 @@ public sealed class CodexKeyboardDevice : IAsyncDisposable
         }
 
         var pendingError = error ?? new ObjectDisposedException(nameof(CodexKeyboardDevice));
-        _router.Fail(pendingError);
-        _inputChannel.Writer.TryComplete(error);
-        _lifetime.Cancel();
-        _readStream.Dispose();
-        _writeStream.Dispose();
-        _ownership.Dispose();
+        var cleanupError = RunCleanupActions(
+            null,
+            () => _router.Fail(pendingError),
+            () => _inputChannel.Writer.TryComplete(error),
+            _lifetime.Cancel,
+            _readStream.Dispose,
+            _writeStream.Dispose,
+            _ownership.Dispose);
+        _cleanupError = cleanupError;
+        if (cleanupError is not null)
+        {
+            error = CombineErrors(error, cleanupError);
+        }
+
+        if (Volatile.Read(ref _commandUsers) == 0)
+        {
+            _commandsDrained.TrySetResult();
+        }
 
         if (error is null)
         {
@@ -456,6 +547,25 @@ public sealed class CodexKeyboardDevice : IAsyncDisposable
             _completion.TrySetException(error);
         }
     }
+
+    internal static Exception? RunCleanupActions(Exception? error, params Action[] actions)
+    {
+        foreach (var action in actions)
+        {
+            try
+            {
+                action();
+            }
+            catch (Exception exception)
+            {
+                error = CombineErrors(error, exception);
+            }
+        }
+        return error;
+    }
+
+    private static Exception CombineErrors(Exception? error, Exception next) =>
+        error is null ? next : new AggregateException(error, next);
 
 }
 
@@ -513,8 +623,14 @@ internal sealed class NamedSemaphoreLease : IDisposable
         {
             return;
         }
-        _semaphore.Release();
-        _semaphore.Dispose();
+        try
+        {
+            _semaphore.Release();
+        }
+        finally
+        {
+            _semaphore.Dispose();
+        }
     }
 }
 
@@ -627,6 +743,7 @@ internal sealed class DeviceReportRouter
             }
             _pending = null;
             pending.Completion.TrySetException(error);
+            _ = pending.Task.Exception;
             return true;
         }
     }
@@ -638,7 +755,11 @@ internal sealed class DeviceReportRouter
         {
             pending = _pending;
             _pending = null;
-            pending?.Completion.TrySetException(error);
+            if (pending is not null)
+            {
+                pending.Completion.TrySetException(error);
+                _ = pending.Task.Exception;
+            }
         }
     }
 }

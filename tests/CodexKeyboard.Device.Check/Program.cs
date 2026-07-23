@@ -13,9 +13,11 @@ internal static class Program
         CheckTransitionMarkerSuppression();
         await CheckTransitionLeaseAsync();
         CheckWrongTerminalResponse();
+        await CheckPendingFailureObservationAsync();
         CheckInputSequenceTracking();
+        CheckCleanupContinuation();
         Console.WriteLine(
-            "CodexKeyboard device check passed: report routing, bootloader ACK handoff, and input resynchronization.");
+            "CodexKeyboard device check passed: report routing, bootloader ACK handoff, observed pending failures, input resynchronization, and cleanup continuation.");
     }
 
     private static async Task CheckInterleavedInputAsync()
@@ -110,6 +112,34 @@ internal static class Program
         }
     }
 
+    private static async Task CheckPendingFailureObservationAsync()
+    {
+        var router = new DeviceReportRouter(Channel.CreateUnbounded<InputEvent>().Writer);
+        var canceled = router.BeginCommand(0x31, MessageType.Ping, MessageType.Ack);
+        var cancelError = new TimeoutException("Expected canceled pending command.");
+        Assert(router.Cancel(canceled, cancelError), "The pending command was not canceled.");
+        await AssertPendingFailureAsync(canceled.Task, cancelError);
+
+        var failed = router.BeginCommand(0x32, MessageType.Ping, MessageType.Ack);
+        var failure = new IOException("Expected failed pending command.");
+        router.Fail(failure);
+        await AssertPendingFailureAsync(failed.Task, failure);
+    }
+
+    private static async Task AssertPendingFailureAsync(
+        Task<byte[]> task,
+        Exception expected)
+    {
+        try
+        {
+            await task;
+            throw new InvalidOperationException("A faulted pending command completed successfully.");
+        }
+        catch (Exception exception) when (ReferenceEquals(exception, expected))
+        {
+        }
+    }
+
     private static void CheckInputSequenceTracking()
     {
         var tracker = new InputSequenceTracker();
@@ -181,6 +211,26 @@ internal static class Program
             "The first post-overflow gap did not complete stale-queue draining.");
         Assert(tracker.Observe(Rotate(0x05)).ShouldDispatch,
             "Input did not resume after the post-overflow gap.");
+    }
+
+    private static void CheckCleanupContinuation()
+    {
+        var actionsRun = 0;
+        var originalError = new InvalidDataException("Expected device failure.");
+        var cleanupError = new IOException("Expected cleanup failure.");
+        var error = CodexKeyboardDevice.RunCleanupActions(
+            originalError,
+            () =>
+            {
+                actionsRun++;
+                throw cleanupError;
+            },
+            () => actionsRun++);
+
+        Assert(actionsRun == 2, "A cleanup failure skipped a later cleanup action.");
+        Assert(error is AggregateException aggregate &&
+               aggregate.InnerExceptions.SequenceEqual([originalError, cleanupError]),
+            "The device and cleanup failures were not both preserved.");
     }
 
     private static InputEvent Rotate(byte sequence) =>

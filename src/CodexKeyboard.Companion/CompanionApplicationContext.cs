@@ -185,6 +185,18 @@ internal sealed class CompanionApplicationContext : ApplicationContext
     private void OnDiagnosticAdded(DiagnosticEntry entry) =>
         Dispatch(() => _testForm?.AddDiagnostic(entry));
 
+    internal async void HandleFatalException(Exception exception)
+    {
+        try
+        {
+            await ExitAsync("CodexKeyboard stopped after an unexpected UI error.", exception);
+        }
+        catch
+        {
+            ExitThread();
+        }
+    }
+
     private void Dispatch(Action action)
     {
         if (_exiting || _dispatcher.IsDisposed)
@@ -196,7 +208,7 @@ internal sealed class CompanionApplicationContext : ApplicationContext
         {
             try
             {
-                _dispatcher.BeginInvoke(action);
+                _dispatcher.BeginInvoke((Action)(() => ExecuteDispatched(action)));
             }
             catch (InvalidOperationException) when (_exiting || _dispatcher.IsDisposed)
             {
@@ -204,44 +216,93 @@ internal sealed class CompanionApplicationContext : ApplicationContext
             return;
         }
 
-        action();
+        ExecuteDispatched(action);
     }
 
-    private async Task ExitAsync()
+    private void ExecuteDispatched(Action action)
     {
-        await _modeGate.WaitAsync();
+        if (_exiting)
+        {
+            return;
+        }
+
         try
         {
-            if (_exiting)
-            {
-                return;
-            }
+            action();
+        }
+        catch (Exception exception)
+        {
+            HandleFatalException(exception);
+        }
+    }
 
-            _exiting = true;
+    private async Task ExitAsync(string? terminalMessage = null, Exception? terminalException = null)
+    {
+        if (_exiting)
+        {
+            return;
+        }
+
+        _exiting = true;
+        var modeGateEntered = false;
+        Exception? shutdownFailure = null;
+        try
+        {
             _openTestsItem.Enabled = false;
             _reconnectItem.Enabled = false;
             _exitItem.Enabled = false;
             _trayIcon.Visible = false;
 
-            await _service.DisposeAsync();
-            _testForm?.Dispose();
-            _trayIcon.Dispose();
-            _trayMenu.Dispose();
-            _dispatcher.Dispose();
-            ExitThread();
+            await _modeGate.WaitAsync();
+            modeGateEntered = true;
+            try
+            {
+                await _service.DisposeAsync();
+            }
+            catch (Exception exception)
+            {
+                shutdownFailure = exception;
+            }
+
+            if (terminalException is not null)
+            {
+                ShowOperationError(terminalMessage!, terminalException);
+            }
+            else if (shutdownFailure is not null)
+            {
+                ShowOperationError("CodexKeyboard could not shut down cleanly.", shutdownFailure);
+            }
+
+            DisposeIgnoringErrors(_testForm);
+            DisposeIgnoringErrors(_trayIcon);
+            DisposeIgnoringErrors(_trayMenu);
+            DisposeIgnoringErrors(_dispatcher);
         }
         catch (Exception exception)
         {
-            _exiting = false;
-            _trayIcon.Visible = true;
-            _openTestsItem.Enabled = true;
-            _reconnectItem.Enabled = true;
-            _exitItem.Enabled = true;
-            ShowOperationError("CodexKeyboard could not shut down cleanly.", exception);
+            try
+            {
+                ShowOperationError(
+                    terminalMessage ?? "CodexKeyboard could not shut down cleanly.",
+                    terminalException ?? exception);
+            }
+            catch
+            {
+            }
         }
         finally
         {
-            _modeGate.Release();
+            if (modeGateEntered)
+            {
+                try
+                {
+                    _modeGate.Release();
+                }
+                catch
+                {
+                }
+            }
+            ExitThread();
         }
     }
 
@@ -251,4 +312,15 @@ internal sealed class CompanionApplicationContext : ApplicationContext
             "CodexKeyboard",
             MessageBoxButtons.OK,
             MessageBoxIcon.Error);
+
+    private static void DisposeIgnoringErrors(IDisposable? resource)
+    {
+        try
+        {
+            resource?.Dispose();
+        }
+        catch
+        {
+        }
+    }
 }

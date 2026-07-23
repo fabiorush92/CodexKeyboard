@@ -122,6 +122,12 @@ internal static class Program
             root, "firmware", "CodexKeyboard", "src", "led.h"));
         var descriptor = File.ReadAllText(Path.Combine(
             root, "firmware", "CodexKeyboard", "src", "usb", "USBconstant.c"));
+        var usbHandler = File.ReadAllText(Path.Combine(
+            root, "firmware", "CodexKeyboard", "src", "usb", "USBhandler.c"));
+        var usbHid = File.ReadAllText(Path.Combine(
+            root, "firmware", "CodexKeyboard", "src", "usb", "USBHID.c"));
+        var protocolImplementation = File.ReadAllText(Path.Combine(
+            root, "firmware", "CodexKeyboard", "src", "protocol.cpp"));
 
         RequireToken(protocol, $"#define CK_REPORT_LENGTH {HidProtocol.ReportLength}");
         RequireToken(protocol, $"#define CK_REPORT_ID 0x{HidProtocol.ReportId:X2}");
@@ -188,6 +194,76 @@ internal static class Program
         RequireToken(descriptor, "0x06, 0x00, 0xFF");
         RequireToken(descriptor, "0x85, 0x01");
         RequireToken(descriptor, "0x95, 0x0F");
+        RequireToken(usbHandler,
+            "case USB_SET_CONFIGURATION: " +
+            "if (UsbSetupBuf->bRequestType != 0x00 || UsbSetupBuf->wValueH || " +
+            "UsbSetupBuf->wValueL > 1 || UsbSetupBuf->wIndexH || " +
+            "UsbSetupBuf->wIndexL || SetupLen) { len = 0xFF; break; } " +
+            "UsbConfig = UsbSetupBuf->wValueL; USB_transport_reset(); break;");
+        RequireToken(usbHandler,
+            "if (UsbSetupBuf->bRequestType != 0x02 || " +
+            "UsbSetupBuf->wValueH || UsbSetupBuf->wValueL || " +
+            "UsbSetupBuf->wIndexH || SetupLen || UsbConfig != 1 || " +
+            "(UsbSetupBuf->wIndexL != 0x81 && UsbSetupBuf->wIndexL != 0x01)) " +
+            "{ len = 0xFF; break; } USB_clear_endpoint_halt(UsbSetupBuf->wIndexL);");
+        RequireToken(usbHandler,
+            "if (UsbSetupBuf->bRequestType != 0x02 || " +
+            "UsbSetupBuf->wValueH || UsbSetupBuf->wValueL || " +
+            "UsbSetupBuf->wIndexH || SetupLen || UsbConfig != 1 || " +
+            "(UsbSetupBuf->wIndexL != 0x81 && UsbSetupBuf->wIndexL != 0x01)) " +
+            "{ len = 0xFF; break; } USB_set_endpoint_halt(UsbSetupBuf->wIndexL);");
+        RequireToken(usbHandler,
+            "case USB_GET_STATUS: if (UsbSetupBuf->wValueH || " +
+            "UsbSetupBuf->wValueL || SetupLen != 2) { len = 0xFF; break; }");
+        RequireToken(usbHandler,
+            "if (endpoint == 0x81 || endpoint == 0x01) { if (UsbConfig != 1) " +
+            "{ len = 0xFF; break; } " +
+            "Ep0Buffer[0] = USB_endpoint_halted((uint8_t)endpoint);");
+        RequireToken(usbHandler,
+            "UEP1_CTRL = bUEP_AUTO_TOG | UEP_T_RES_NAK | UEP_R_RES_NAK;");
+        RequireToken(usbHid,
+            "uint8_t USB_take_transport_reset(void) { uint8_t pending; " +
+            "uint8_t interrupts_enabled = EA; EA = 0; pending = usb_reset_pending_s; " +
+            "usb_reset_pending_s = 0; EA = interrupts_enabled; return pending; }");
+        RequireToken(usbHid,
+            "uint8_t USB_claim_report_completion(void) { uint8_t ready; " +
+            "uint8_t interrupts_enabled = EA; EA = 0; ready = usb_in_complete_s && " +
+            "!usb_reset_pending_s && !usb_in_halted_s && !UIF_BUS_RST && !UIF_TRANSFER;");
+        RequireToken(usbHid,
+            "if (UsbConfig && !usb_reset_pending_s && !usb_in_halted_s && " +
+            "!usb_in_busy_s)");
+        RequireToken(usbHid,
+            "if (!usb_reset_pending_s && !usb_out_halted_s && usb_out_pending_s)");
+        RequireToken(usbHid,
+            "void USB_EP1_IN(void) { if (usb_in_halted_s) { return; }");
+        RequireToken(usbHid,
+            "void USB_EP1_OUT(void) { if (!usb_out_halted_s && U_TOG_OK)");
+        RequireToken(usbHid,
+            "void USB_set_endpoint_halt(uint8_t endpoint_address) { " +
+            "reset_transfer_state();");
+        RequireToken(usbHid,
+            "static void update_endpoint_responses(void) { uint8_t control = " +
+            "UEP1_CTRL & (bUEP_T_TOG | bUEP_R_TOG);");
+        RequireToken(usbHid,
+            "uint8_t USB_endpoint_halted(uint8_t endpoint_address) { " +
+            "return endpoint_address == 0x81 ? usb_in_halted_s : usb_out_halted_s; }");
+        RequireToken(usbHid,
+            "void USB_clear_endpoint_halt(uint8_t endpoint_address) { " +
+            "reset_transfer_state();");
+        RequireToken(usbHid,
+            "void USB_cancel_pending_in(void) { uint8_t interrupts_enabled = EA; " +
+            "EA = 0; usb_in_busy_s = 0; usb_in_complete_s = 0; UEP1_T_LEN = 0;");
+        RequireToken(usbHid,
+            "void USB_transport_reset(void) { reset_transfer_state(); " +
+            "usb_in_halted_s = 0; usb_out_halted_s = 0; " +
+            "UEP1_CTRL = bUEP_AUTO_TOG | UEP_T_RES_NAK | " +
+            "(UsbConfig ? UEP_R_RES_ACK : UEP_R_RES_NAK); }");
+        RequireToken(protocolImplementation,
+            "if (USB_take_transport_reset()) { close_session(); } if (!UsbConfig)");
+        RequireToken(protocolImplementation,
+            "static void close_session(void) { USB_cancel_pending_in();");
+        RequireToken(protocolImplementation,
+            "if (USB_claim_report_completion()) { led_show_bootloader(); BOOT_now(); }");
     }
 
     private static string FindRepositoryRoot()

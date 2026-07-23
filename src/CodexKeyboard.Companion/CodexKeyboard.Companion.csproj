@@ -12,4 +12,9 @@
     <ProjectReference Include="..\CodexKeyboard.Device\CodexKeyboard.Device.csproj" />
     <ProjectReference Include="..\CodexKeyboard.Protocol\CodexKeyboard.Protocol.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>CodexKeyboard.Companion.Check</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
 </Project>

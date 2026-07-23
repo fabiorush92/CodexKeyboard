@@ -58,6 +58,8 @@ internal sealed class KeyboardService : IAsyncDisposable
     private readonly CancellationTokenSource _lifetime = new();
     private readonly SemaphoreSlim _operationGate = new(1, 1);
     private readonly SemaphoreSlim _wakeSignal = new(0, 1);
+    private readonly TaskCompletionSource _disposeCompletion =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly InputSequenceTracker _inputTracker = new();
     private readonly List<DiagnosticEntry> _diagnostics = [];
     private Task _runTask = Task.CompletedTask;
@@ -278,19 +280,31 @@ internal sealed class KeyboardService : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         Task runTask;
+        bool ownsDispose;
         lock (_sync)
         {
-            if (_disposed)
+            ownsDispose = !_disposed;
+            if (ownsDispose)
             {
-                return;
+                _disposed = true;
+                runTask = _runTask;
             }
-
-            _disposed = true;
-            runTask = _runTask;
+            else
+            {
+                runTask = Task.CompletedTask;
+            }
         }
 
-        _lifetime.Cancel();
-        WakeConnectionLoop();
+        if (!ownsDispose)
+        {
+            await _disposeCompletion.Task.ConfigureAwait(false);
+            return;
+        }
+
+        Exception? disposeError = RunCleanupActions(
+            null,
+            _lifetime.Cancel,
+            WakeConnectionLoop);
         try
         {
             await runTask.ConfigureAwait(false);
@@ -298,11 +312,28 @@ internal sealed class KeyboardService : IAsyncDisposable
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
         {
         }
-
-        SetStatus(ServiceConnectionState.Stopped, null, "Stopped");
-        _operationGate.Dispose();
-        _wakeSignal.Dispose();
-        _lifetime.Dispose();
+        catch (Exception exception)
+        {
+            disposeError = CombineErrors(disposeError, exception);
+        }
+        finally
+        {
+            disposeError = RunCleanupActions(
+                disposeError,
+                () => SetStatus(ServiceConnectionState.Stopped, null, "Stopped"),
+                _operationGate.Dispose,
+                _wakeSignal.Dispose,
+                _lifetime.Dispose);
+            if (disposeError is null)
+            {
+                _disposeCompletion.TrySetResult();
+            }
+            else
+            {
+                _disposeCompletion.TrySetException(disposeError);
+            }
+        }
+        await _disposeCompletion.Task.ConfigureAwait(false);
     }
 
     private async Task RunAsync(CancellationToken cancellationToken)
@@ -356,7 +387,17 @@ internal sealed class KeyboardService : IAsyncDisposable
             {
                 if (device is not null)
                 {
-                    await DetachAndDisposeAsync(device).ConfigureAwait(false);
+                    try
+                    {
+                        await DetachAndDisposeAsync(device).ConfigureAwait(false);
+                    }
+                    catch (Exception exception)
+                    {
+                        var detail = $"Runtime cleanup failed; reconnect stopped: {exception.Message}";
+                        SetStatus(ServiceConnectionState.Disconnected, null, detail);
+                        AddDiagnostic(DiagnosticLevel.Error, detail);
+                        throw;
+                    }
                 }
             }
 
@@ -641,4 +682,23 @@ internal sealed class KeyboardService : IAsyncDisposable
         {
         }
     }
+
+    private static Exception? RunCleanupActions(Exception? error, params Action[] actions)
+    {
+        foreach (var action in actions)
+        {
+            try
+            {
+                action();
+            }
+            catch (Exception exception)
+            {
+                error = CombineErrors(error, exception);
+            }
+        }
+        return error;
+    }
+
+    private static Exception CombineErrors(Exception? error, Exception next) =>
+        error is null ? next : new AggregateException(error, next);
 }
